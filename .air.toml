@@ -1,0 +1,23 @@
+root = "."
+tmp_dir = ".air"
+
+[build]
+args_bin = ["-config", "config.dev.json"]
+bin = "/app/.dev-air/baitbox"
+# module mode build. `go mod tidy` is not run here so a dev rebuild never changes the
+# module graph. Deps are pinned in go.mod/go.sum; `-mod mod` fetches what is needed at those versions. To add a new import,
+# run `go get <module>@<version>` in the container, then (for releases) `go mod vendor`.
+cmd = "CGO_ENABLED=1 go build -tags dev -mod mod -o ./.dev-air/baitbox ."
+delay = 1000
+exclude_dir = [".dev", ".dev-air", ".air", "vendor", ".git"]
+exclude_regex = ["_test.go"]
+include_ext = ["go", "html", "css", "json"]
+kill_delay = "0s"
+send_interrupt = true
+stop_on_error = true
+
+[log]
+time = false
+
+[misc]
+clean_on_exit = false

@@ -1,0 +1,164 @@
+name: Test Build
+
+# Builds a test baitbox binary the same way as release.yml (static musl cgo
+# build in the pinned golang alpine image, no dev tag so it targets Let's
+# Encrypt) and keeps it as a workflow artifact for review. Nothing is published.
+# Test builds are never signed. Only release.yml signs, with the release key
+# whose public half is embedded, so no installed self update accepts a test
+# build.
+#
+# The admin SPA is built in its own job; npm runs there with install scripts
+# off and sees only the frontend directory, and the built SPA is handed to the
+# Go build job as an artifact, so npm code never runs where the Go sources and
+# the signing key are.
+#
+# Trigger: push to the test-build branch, or run it by hand. A push builds
+# amd64 only; a manual run can tick build_arm to also build arm64.
+
+on:
+  push:
+    branches: [test-build]
+  workflow_dispatch:
+    inputs:
+      build_arm:
+        description: "Also build arm64 (default builds amd64 only)"
+        type: boolean
+        default: false
+
+env:
+  BUILD_ARM: ${{ github.event.inputs.build_arm || 'false' }}
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: frontend
+
+      # the frontend directory is mounted read only and copied inside the
+      # container, so npm writes nothing back to the runner except build/.
+      # npm ci installs exactly what package-lock.json pins and fails if the
+      # lockfile and package.json disagree; install scripts are skipped (esbuild
+      # finds its binary through its optional platform package without one).
+      - name: Build admin SPA
+        run: |
+          mkdir -p spa-out
+          docker run --rm \
+            -v "$(pwd)/frontend":/src:ro \
+            -v "$(pwd)/spa-out":/out \
+            node@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 `# node:22-slim` \
+            sh -c "cp -r /src /work && rm -rf /work/node_modules /work/build /work/.svelte-kit && cd /work \
+              && npm ci --ignore-scripts --no-audit --no-fund && npm run build && cp -r build/. /out/ \
+              && chown -R $(id -u):$(id -g) /out"
+
+      - name: Upload admin SPA
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admin-spa
+          path: spa-out/
+          if-no-files-found: error
+          retention-days: 1
+
+  test-build:
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download admin SPA
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: admin-spa
+          path: frontend/build
+
+      # arm64 is built under emulation, so the arm64 golang image can run on the
+      # amd64 runner. only needed when arm64 is built.
+      - name: Set up QEMU
+        if: env.BUILD_ARM == 'true'
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Extract version info
+        id: version
+        run: |
+          echo "VERSION=test-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+          echo "HASH=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Cache Go build cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: /tmp/go-build-cache
+          key: go-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-build-${{ runner.os }}-${{ hashFiles('go.sum') }}-
+            go-build-${{ runner.os }}-
+
+      - name: Build binaries
+        run: |
+          mkdir -p build/amd64 build/arm64 /tmp/go-build-cache
+          LDFLAGS="-X main.version=${{ steps.version.outputs.VERSION }}+${{ steps.version.outputs.HASH }} -linkmode=external -extldflags=-static"
+
+          sudo docker run --rm \
+            -v "$(pwd)":/app \
+            -v /tmp/go-build-cache:/root/.cache/go-build \
+            -w /app \
+            golang@sha256:bff16a94c0b4b6d9642581e2a3aa81beb3edb940b2f5a3aac1d22c6a68cb7747 `# golang:1.27.3-alpine linux/amd64` \
+            sh -c "apk add --no-cache gcc=15.2.0-r5 musl-dev=1.2.6-r3 && go build -trimpath -mod vendor -ldflags='$LDFLAGS' -o /app/build/amd64/baitbox ."
+
+          if [ "${BUILD_ARM}" = "true" ]; then
+            sudo docker run --rm \
+              --platform linux/arm64 \
+              -v "$(pwd)":/app \
+              -w /app \
+              golang@sha256:ee0dcdc452cb73890363fbef65fc333aeb0da7c24ba52f2c6428a37b0e7f4f1c `# golang:1.27.3-alpine linux/arm64` \
+              sh -c "apk add --no-cache gcc=15.2.0-r5 musl-dev=1.2.6-r3 && go build -trimpath -mod vendor -ldflags='$LDFLAGS' -o /app/build/arm64/baitbox ."
+          else
+            echo "BUILD_ARM not enabled, skipping arm64 build"
+          fi
+
+      - name: Fix build directory permissions
+        run: |
+          sudo chown -R $USER:$USER build/
+          ls -la build/amd64 build/arm64
+
+      - name: Package binaries
+        run: |
+          mkdir -p packages
+          for arch in amd64 arm64; do
+            [ -f build/$arch/baitbox ] || continue
+            tar -czf packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_$arch.tar.gz -C build/$arch baitbox
+          done
+
+      - name: Verify build artifacts
+        run: |
+          for arch in amd64 arm64; do
+            [ -f build/$arch/baitbox ] || continue
+            echo "=== $arch ==="
+            file build/$arch/baitbox
+            du -h build/$arch/baitbox
+            tar -tzf packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_$arch.tar.gz
+          done
+
+      - name: Upload build artifacts (for review)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baitbox-test-build-${{ steps.version.outputs.HASH }}
+          # arm64 paths are only present when BUILD_ARM is enabled
+          if-no-files-found: ignore
+          path: |
+            build/amd64/baitbox
+            build/arm64/baitbox
+            packages/*.tar.gz
+          retention-days: 2

@@ -1,0 +1,20 @@
+services:
+  baitbox:
+    image: ghcr.io/phishingclub/baitbox:latest
+
+    container_name: baitbox
+    restart: unless-stopped
+
+    # config.json is a copy of config.prod.json with the hosts and ACME email
+    # filled in; set tls_auto to true for Let's Encrypt certificates. The data
+    # volume holds the database, package blobs and certificates.
+    volumes:
+      - ./config.json:/app/config.prod.json:ro
+      - baitbox-data:/app/data
+
+    ports:
+      - "443:443" # Registry
+      - "8443:8443" # Admin interface
+
+volumes:
+  baitbox-data:

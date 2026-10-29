@@ -1,0 +1,234 @@
+name: Release
+
+# Publishes a signed baitbox release so the self update (install/update.go) can
+# find it on the GitHub releases API, verify its Ed25519 signature against the
+# embedded public key, and swap the binary in. It mirrors the build in
+# test-build.yml (static musl cgo build in the pinned golang alpine image) for both
+# linux/amd64 and linux/arm64, and adds the GitHub Release publish step that the
+# updater reads. The same binaries are then pushed as a multi arch image to
+# ghcr.io/<repo> tagged latest and the version.
+#
+# Trigger: push a semver tag like v1.2.3. The updater compares semver, so the
+# tag must be valid semver or the downgrade guard will refuse the update.
+#
+# The admin SPA is built in its own job with read only permissions. npm runs
+# there with install scripts off and sees only the frontend directory, and the
+# built SPA is handed to the release job as an artifact. npm code never runs in
+# the job that holds the Go sources, the signing key and the write token.
+#
+# Required repo secret: SIGNKEY_1, the PEM Ed25519 private key whose public half
+# is embedded at embedded/signingkeys/public1.bin.
+
+# only a tag push runs this workflow, so the release key never signs a branch
+# build; the release job also checks the ref itself.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: frontend
+
+      # the frontend directory is mounted read only and copied inside the
+      # container, so npm writes nothing back to the runner except build/.
+      # npm ci installs exactly what package-lock.json pins and fails if the
+      # lockfile and package.json disagree; install scripts are skipped (esbuild
+      # finds its binary through its optional platform package without one).
+      - name: Build admin SPA
+        run: |
+          mkdir -p spa-out
+          docker run --rm \
+            -v "$(pwd)/frontend":/src:ro \
+            -v "$(pwd)/spa-out":/out \
+            node@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 `# node:22-slim` \
+            sh -c "cp -r /src /work && rm -rf /work/node_modules /work/build /work/.svelte-kit && cd /work \
+              && npm ci --ignore-scripts --no-audit --no-fund && npm run build && cp -r build/. /out/ \
+              && chown -R $(id -u):$(id -g) /out"
+
+      - name: Upload admin SPA
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admin-spa
+          path: spa-out/
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: frontend
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
+      tag: ${{ steps.version.outputs.TAG }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download admin SPA
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: admin-spa
+          path: frontend/build
+
+      # arm64 is built under emulation, so the arm64 golang image can run on the
+      # amd64 runner.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      # the tag filter above is a glob, so a tag such as v1.2.3$(cmd) would still
+      # match. the version is pasted into later run scripts, so only a plain
+      # vMAJOR.MINOR.PATCH tag is let through.
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "tag $TAG is not a plain vMAJOR.MINOR.PATCH tag" >&2
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+
+      # no Go build cache: release builds are infrequent and produce a signed,
+      # published binary, so a clean compile keeps cached objects out of the
+      # signing path. The digest below is the golang:1.27.3-alpine image index;
+      # the platform flag selects the matching per arch image from it.
+      - name: Build binaries
+        run: |
+          mkdir -p build/amd64 build/arm64
+          for arch in amd64 arm64; do
+            sudo docker run --rm \
+              --platform linux/$arch \
+              -v "$(pwd)":/app \
+              -w /app \
+              golang@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb `# golang:1.27.3-alpine` \
+              sh -c "apk add --no-cache gcc=15.2.0-r5 musl-dev=1.2.6-r3 && go build -trimpath -mod vendor \
+                -ldflags='-X main.version=${{ steps.version.outputs.VERSION }} -linkmode=external -extldflags=-static' \
+                -o /app/build/$arch/baitbox ."
+          done
+
+      - name: Fix build directory permissions
+        run: |
+          sudo chown -R $USER:$USER build/
+          ls -la build/amd64 build/arm64
+
+      - name: Sign binaries with Ed25519
+        env:
+          SIGNKEY_1: ${{ secrets.SIGNKEY_1 }}
+        run: |
+          mkdir -p /tmp/keys
+          chmod 700 /tmp/keys
+          printf '%s\n' "$SIGNKEY_1" > /tmp/keys/private1.pem
+          chmod 600 /tmp/keys/private1.pem
+          openssl pkeyutl -sign -inkey /tmp/keys/private1.pem -rawin \
+            -in build/amd64/baitbox -out build/amd64/baitbox.sig
+          openssl pkeyutl -sign -inkey /tmp/keys/private1.pem -rawin \
+            -in build/arm64/baitbox -out build/arm64/baitbox.sig
+          rm -rf /tmp/keys
+
+      - name: Package binaries with their signatures
+        run: |
+          mkdir -p packages
+          tar -czf packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_amd64.tar.gz \
+            -C build/amd64 baitbox baitbox.sig
+          tar -czf packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_arm64.tar.gz \
+            -C build/arm64 baitbox baitbox.sig
+
+      - name: Publish GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.version.outputs.TAG }} --repo "$GITHUB_REPOSITORY" \
+            ./packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_amd64.tar.gz \
+            ./packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_arm64.tar.gz \
+            --title "${{ steps.version.outputs.TAG }}" \
+            --generate-notes
+
+      # the image job gets the binaries that were just signed and released, so the
+      # image runs the same bytes as the release assets.
+      - name: Upload binaries for the image
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-binaries
+          path: |
+            build/amd64/baitbox
+            build/arm64/baitbox
+          if-no-files-found: error
+          retention-days: 1
+
+  # pushes the multi arch image to GHCR. It runs apart from the release job so
+  # the package write token never sits next to the signing key.
+  image:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: Dockerfile.release
+          sparse-checkout-cone-mode: false
+
+      - name: Download binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-binaries
+          path: build
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push multi arch image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile.release
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ needs.release.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=Bait Box ${{ needs.release.outputs.version }}
+            org.opencontainers.image.description=Bait Box production release image (linux/amd64, linux/arm64). Built from tag ${{ needs.release.outputs.tag }}.
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.release.outputs.version }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+            org.opencontainers.image.revision=${{ github.sha }}

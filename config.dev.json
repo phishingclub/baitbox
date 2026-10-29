@@ -1,0 +1,31 @@
+{
+  "env": "dev",
+  "tls_auto": true,
+  "acme": {
+    "email": "dev@baitbox.test"
+  },
+  "administration": {
+    "address": ":8114",
+    "tls_host": "admin.baitbox.test"
+  },
+  "registry": {
+    "address": ":8112",
+    "tls_host": "registry.baitbox.test",
+    "max_download": 16777216,
+    "max_file": 16777216,
+    "max_unpacked": 33554432,
+    "max_files": 2000,
+    "public": false
+  },
+  "database": {
+    "path": "/app/.dev/baitbox.sqlite3"
+  },
+  "blobs": {
+    "path": "/app/.dev/blobs"
+  },
+  "ip_security": {
+    "admin_allowed": [],
+    "trusted_proxies": [],
+    "trusted_ip_header": ""
+  }
+}

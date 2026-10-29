@@ -1,0 +1,40 @@
+# production image for the baitbox binary.
+# the binary is a static musl cgo build, so it runs on a minimal base; only
+# ca-certificates (outbound TLS to Let's Encrypt) and tzdata are needed.
+FROM debian:12-slim@sha256:b29f74a267526ae6ea104eed6c46133b0ca70ce812525df8cd5817698f0a624a
+
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# non root runtime user
+RUN groupadd -g 1000 appuser && \
+    useradd -r -u 1000 -g appuser appuser
+
+WORKDIR /app
+
+# copy the binary for the target architecture (build context provides build/<arch>/baitbox)
+ARG TARGETARCH
+COPY build/${TARGETARCH}/baitbox /app/baitbox
+RUN chmod +x /app/baitbox && chown appuser:appuser /app/baitbox
+
+# data dir beside the binary: holds the sqlite db, the content blobs and
+# the issued certs. created here so the container boots without
+# a volume and a mounted volume inherits the right owner.
+RUN mkdir -p /app/data && chown appuser:appuser /app/data
+
+USER appuser
+
+# serves the registry API over HTTPS and answers the ACME TLS-ALPN-01 challenge
+# on 443; the admin UI and API listen on administration.address (8443 in config.prod.json),
+# publish or firewall that port separately. 80 is optional for an HTTP-01
+# fallback and an http to https redirect handled by a front.
+EXPOSE 443 8443 80
+
+# mount the real config over /app/config.prod.json and a persistent volume at
+# /app/data (holds the sqlite db, blobs and certs)
+ENTRYPOINT ["/app/baitbox"]
+CMD ["-config", "/app/config.prod.json"]

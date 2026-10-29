@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#1e3fa8"/>
+  <!-- the Phishing Club chevron mark, rotated 90 degrees, centered on its own
+       bounding box center (131, 8.6) and scaled to sit inside the square. -->
+  <g fill="#ffffff" transform="translate(16 16) scale(0.9) rotate(90) translate(-131 -8.6)">
+    <path d="m126.63,8.2l-4.5-2.6c-.58-.34-1.31.08-1.31.75v5.19c0,.67.73,1.09,1.31.75l4.5-2.6c.58-.34.58-1.17,0-1.51Z"/>
+    <path d="m140.97,7.67l-11.77-6.8c-.99-.57-2.23.14-2.23,1.28v3.81l3.18,1.84c.76.44.76,1.54,0,1.98l-3.18,1.84v4.13c0,1.14,1.24,1.86,2.23,1.28l11.77-6.8c.99-.57.99-2,0-2.57Z"/>
+  </g>
+</svg>

@@ -1,0 +1,31 @@
+{
+  "env": "prod",
+  "tls_auto": false,
+  "acme": {
+    "email": "REPLACE_WITH_ACME_EMAIL"
+  },
+  "administration": {
+    "address": ":8443",
+    "tls_host": "REPLACE_WITH_ADMIN_HOST"
+  },
+  "registry": {
+    "address": ":443",
+    "tls_host": "REPLACE_WITH_REGISTRY_HOST",
+    "max_download": 16777216,
+    "max_file": 16777216,
+    "max_unpacked": 33554432,
+    "max_files": 2000,
+    "public": false
+  },
+  "database": {
+    "path": "/app/data/baitbox.sqlite3"
+  },
+  "blobs": {
+    "path": "/app/data/blobs"
+  },
+  "ip_security": {
+    "admin_allowed": [],
+    "trusted_proxies": [],
+    "trusted_ip_header": ""
+  }
+}

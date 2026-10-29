@@ -1,0 +1,233 @@
+/* Vendored fonts, served from static/ (no CDN). Phudu for headings and the
+   wordmark, Titillium Web for body. */
+@font-face {
+	font-family: 'Titillium Web';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src: url('/TitilliumWeb-Regular.ttf') format('truetype');
+}
+@font-face {
+	font-family: 'Titillium Web';
+	font-style: normal;
+	font-weight: 600;
+	font-display: swap;
+	src: url('/TitilliumWeb-SemiBold.ttf') format('truetype');
+}
+@font-face {
+	font-family: 'Titillium Web';
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src: url('/TitilliumWeb-Bold.ttf') format('truetype');
+}
+@font-face {
+	font-family: 'Phudu';
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src: url('/Phudu-Bold.ttf') format('truetype');
+}
+@font-face {
+	font-family: 'Phudu';
+	font-style: normal;
+	font-weight: 900;
+	font-display: swap;
+	src: url('/Phudu-Black.ttf') format('truetype');
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+	color-scheme: light dark;
+}
+
+@layer base {
+	body {
+		font-family: 'Titillium Web', system-ui, sans-serif;
+	}
+	/* page titles and the wordmark use Phudu; section headings stay Titillium so the
+	   display font is an accent, not everywhere. */
+	h1,
+	.font-phudu {
+		font-family: 'Phudu', system-ui, sans-serif;
+		letter-spacing: -0.01em;
+	}
+	/* Phudu is an all caps display face, so it renders any text in capitals. A title
+	   that shows user authored data (a package name or address) must keep the casing
+	   the author typed, so it opts out of Phudu back to the body font. */
+	.font-body {
+		font-family: 'Titillium Web', system-ui, sans-serif;
+		letter-spacing: normal;
+	}
+	/* text form fields: a brand focus border instead of the browser default outline. */
+	input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):focus,
+	select:focus,
+	textarea:focus {
+		outline: none;
+		border-color: #445ecc; /* cta-blue */
+	}
+	:root.dark input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):focus,
+	:root.dark select:focus,
+	:root.dark textarea:focus {
+		border-color: #6887ea; /* highlight-blue */
+	}
+	/* native select popup: theme the option list so it is not the browser default
+	   grey, which clashed with the dark panels. the closed control is styled by its
+	   utility classes; these rules reach the opened list and its options. */
+	select option,
+	select optgroup {
+		background-color: #ffffff;
+		color: #111827;
+	}
+	:root.dark select option,
+	:root.dark select optgroup {
+		background-color: #0f1428; /* near pc-darkblue, matches the dark panels */
+		color: #e5e7eb;
+	}
+	/* replace the browser default select arrow, which sat at an inconsistent position
+	   across platforms, with our own chevron placed at a fixed spot. matches the
+	   phishingclub look. the right padding keeps the text clear of the chevron. */
+	select:not([multiple]) {
+		appearance: none;
+		-webkit-appearance: none;
+		-moz-appearance: none;
+		background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20fill='none'%20viewBox='0%200%2024%2024'%20stroke='%236b7280'%20stroke-width='2'%3E%3Cpath%20stroke-linecap='round'%20stroke-linejoin='round'%20d='M19%209l-7%207-7-7'/%3E%3C/svg%3E");
+		background-repeat: no-repeat;
+		background-position: right 0.7rem center;
+		background-size: 1rem 1rem;
+		padding-right: 2.25rem;
+	}
+	:root.dark select:not([multiple]) {
+		background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20fill='none'%20viewBox='0%200%2024%2024'%20stroke='%239ca3af'%20stroke-width='2'%3E%3Cpath%20stroke-linecap='round'%20stroke-linejoin='round'%20d='M19%209l-7%207-7-7'/%3E%3C/svg%3E");
+	}
+}
+
+/* Shared form control styling, copied from the phishingclub field components so every
+   input, select and textarea reads the same: a soft grayblue fill, a transparent border
+   that turns brand blue on focus, and smooth transitions. Use the Field component for the
+   label + optional pill, and add `pc-control` to the native input/select/textarea. */
+@layer components {
+	/* every input/select/textarea: a visible rest border and a neutral fill so fields
+	   read as fields, not placeholder blocks; brand border + brighter fill on focus. */
+	.pc-control {
+		@apply w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-800 transition-colors duration-200 placeholder:text-gray-400 focus:border-cta-blue focus:bg-white focus:outline-none dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:border-highlight-blue dark:focus:bg-gray-800/60;
+	}
+	.pc-label-row {
+		@apply flex items-center gap-2 pb-1;
+	}
+	.pc-label {
+		@apply text-sm font-semibold text-gray-900 dark:text-white;
+	}
+	.pc-optional {
+		@apply rounded-md bg-gray-100 px-2 py-0.5 text-xs font-normal text-gray-700 dark:bg-gray-800/60 dark:text-gray-200;
+	}
+	.pc-hint {
+		@apply mt-1 block text-sm text-gray-700 dark:text-gray-200;
+	}
+
+	/* surfaces and text tiers, named once so every page reads the same. the card is the
+	   one content surface; the inset is a well inside it (code, meta, preview tiles).
+	   text has three steps: primary (pc-label/pc-h1), body (pc-hint/pc-desc), muted. */
+	.pc-card {
+		@apply rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950;
+	}
+	.pc-inset {
+		@apply rounded-md bg-gray-50 dark:bg-gray-900;
+	}
+	.pc-muted {
+		@apply text-gray-500 dark:text-gray-400;
+	}
+
+	/* one type scale for page and card headings so hierarchy reads clearly:
+	   a dominant page title, then card titles a clear step above body text.
+	   pc-h1 on an h1 tag also picks up Phudu from the base rule. one color for
+	   every title so sibling cards never drift. */
+	.pc-h1 {
+		@apply text-3xl font-bold text-gray-900 dark:text-white;
+	}
+	.pc-card-title {
+		@apply text-lg font-semibold text-gray-900 dark:text-white;
+	}
+	/* card and section body copy: a comfortable reading size, high contrast in
+	   both themes (no washed out grey). */
+	.pc-desc {
+		@apply text-sm text-gray-700 dark:text-gray-200;
+	}
+
+	/* list table furniture: one pager button, one kebab trigger, one dropdown menu
+	   and its items, so every list page reads and behaves the same. */
+	.pc-pager-btn {
+		@apply rounded-md border border-gray-300 px-3 py-1 font-medium text-gray-800 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-900;
+	}
+	.pc-kebab {
+		@apply inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-lg leading-none text-gray-700 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cta-blue/40 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800;
+	}
+	.pc-menu {
+		@apply absolute right-0 z-20 mt-1 w-44 origin-top-right rounded-md border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-900;
+	}
+	.pc-menu-item {
+		@apply flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium text-gray-800 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-100 dark:hover:bg-gray-800;
+	}
+	.pc-menu-item-danger {
+		@apply flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20;
+	}
+
+	/* three button tiers, applied mechanically for consistency. sentence case (no
+	   uppercase), one active/hover language, explicit disabled so a disabled CTA never
+	   reads as broken. */
+	.pc-btn-primary {
+		@apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-cta-blue/50 bg-cta-blue text-white hover:bg-active-blue disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 dark:disabled:bg-gray-800 dark:disabled:text-gray-500;
+	}
+	.pc-btn-secondary {
+		@apply inline-flex items-center justify-center gap-2 rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-cta-blue/40 disabled:cursor-not-allowed disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-200 dark:hover:bg-gray-800;
+	}
+	.pc-btn-danger {
+		@apply inline-flex items-center justify-center gap-2 rounded-md border border-red-300 bg-transparent px-4 py-2 text-sm font-semibold text-red-600 transition-colors hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-500/40 dark:text-red-400 dark:hover:bg-red-900/20;
+	}
+	.pc-btn-warn {
+		@apply inline-flex items-center justify-center gap-2 rounded-md border border-amber-300 bg-transparent px-4 py-2 text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/40 disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-900/20;
+	}
+
+	/* compact bordered buttons for table row and inline actions, so actions read as
+	   buttons rather than floating underlined text. one size, four intents. */
+	.pc-btn-xs-neutral {
+		@apply inline-flex items-center justify-center gap-1 rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-800 transition-colors hover:bg-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-cta-blue/40 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:text-gray-100 dark:hover:bg-gray-800;
+	}
+	.pc-btn-xs-blue {
+		@apply inline-flex items-center justify-center gap-1 rounded-md border border-highlight-blue px-2.5 py-1 text-xs font-medium text-cta-blue transition-colors hover:bg-grayblue-light focus:outline-none focus-visible:ring-2 focus-visible:ring-cta-blue/40 disabled:cursor-not-allowed disabled:opacity-40 dark:border-active-blue dark:text-pc-dusty-light-blue dark:hover:bg-pc-darkblue/40;
+	}
+	.pc-btn-xs-warn {
+		@apply inline-flex items-center justify-center gap-1 rounded-md border border-amber-300 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/40 disabled:cursor-not-allowed disabled:opacity-40 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-900/20;
+	}
+	.pc-btn-xs-danger {
+		@apply inline-flex items-center justify-center gap-1 rounded-md border border-red-300 px-2.5 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-500/40 dark:text-red-400 dark:hover:bg-red-900/20;
+	}
+}
+
+/* explicit body background so the viewport never flashes a UA default or bleeds
+   light behind a page that does not fully cover it. Light: pleasant-gray; dark:
+   pc-darkblue tinted near black. */
+body {
+	background-color: #f6f6fb;
+	color: #111827; /* gray-900: strong, readable body text (no washed out grey) */
+}
+:root.dark body {
+	background-color: #0a0e1f;
+	color: #f9fafb; /* near white in dark mode */
+}
+
+/* respect a reduced motion request: near instant transitions and animations (the sidebar
+   slide, hover color shifts, etc.) for operators with vestibular sensitivity. */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+		scroll-behavior: auto !important;
+	}
+}

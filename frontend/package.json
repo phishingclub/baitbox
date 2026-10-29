@@ -1,0 +1,25 @@
+{
+  "name": "baitbox-admin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev --config vite.dev.config.js --mode development",
+    "build": "vite build --config vite.config.js --mode production",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "monaco-editor": "0.53.0",
+    "monaco-vim": "0.4.2"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.70.3",
+    "@sveltejs/vite-plugin-svelte": "4.0.4",
+    "@vitejs/plugin-basic-ssl": "1.2.0",
+    "autoprefixer": "10.6.1",
+    "postcss": "8.5.28",
+    "svelte": "5.57.1",
+    "tailwindcss": "3.4.19",
+    "vite": "5.4.21"
+  }
+}

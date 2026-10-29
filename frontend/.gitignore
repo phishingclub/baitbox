@@ -1,0 +1,6 @@
+node_modules/
+# build output stays ignored; the placeholder keeps the Go embed compiling.
+/build/*
+!/build/.gitkeep
+.svelte-kit/
+.vite/

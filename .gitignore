@@ -1,0 +1,11 @@
+.air/
+.air-iar/
+.dev/
+data/
+certs/
+/build/
+.dev-air/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+embedded/signingkeys/private*.bin
