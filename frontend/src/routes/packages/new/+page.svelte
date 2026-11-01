@@ -19,9 +19,12 @@
 	import Checkbox from '$lib/components/Checkbox.svelte';
 	import Alert from '$lib/components/Alert.svelte';
 	import Field from '$lib/components/Field.svelte';
+	import AllowDenyRules from '$lib/components/AllowDenyRules.svelte';
+	import AssetSettings from '$lib/components/AssetSettings.svelte';
+	import { emptyAssetMeta, hasAssetMeta, assetMetaErrors, hasErrors, listYaml, assetsYaml, parseAssetMeta, pickVarName, scalarBool, listKinds, usedListPackages, fetchListPackage, isListPick } from '$lib/utils/assetMeta.js';
 	import { fillPreview } from '$lib/utils/pcVariables.js';
 	import { compareSemver } from '$lib/utils/semver.js';
-	import { bumpPatch, decodeText, mimeFor, yamlStr, b64text, MAX_FILE_BYTES, assetFolder, assetRef, copyRef, sanitizeAssetPath } from '$lib/utils/authoring.js';
+	import { bumpPatch, decodeText, mimeFor, yamlStr, unquoteYamlStr, b64text, MAX_FILE_BYTES, assetFolder, assetRef, copyRef, sanitizeAssetPath } from '$lib/utils/authoring.js';
 
 	let editingFrom = $state(''); // ns/name/version this is a new version of
 
@@ -164,7 +167,17 @@ if (username) {
 		apiOAuthMode: 'none', // none | own | name
 		apiOAuthName: '' // referenced provider name or a @@VAR@@ when mode is name
 	});
-	let assets = $state([]); // {filename, base64}
+	let assets = $state([]); // {filename, base64, name, description, contentType, headers, allowDeny}
+	// the allow / deny packages the assets can use lists from: picked in an asset's
+	// settings or loaded from the dependencies of the version being edited. each is
+	// { id, namespace, name, title, lists: [{ name, allowed }] }. an allow / deny
+	// package edits its own one list in form.
+	let listPkgs = $state([]);
+	// the installer pick variables named in asset lists, mapped to their pick
+	// kind.
+	let listPicks = $state({});
+	// which assets have their settings panel open, by asset path
+	let metaOpen = $state({});
 	// email attachments: files shipped under content/<folder>/ and linked to the
 	// email on install.
 	let emailAttachments = $state([]);
@@ -201,7 +214,8 @@ if (username) {
 		// preview), so every field is covered without enumerating.
 		return JSON.stringify({
 			form,
-			assets: assets.map((a) => a.filename + ':' + a.base64.length),
+			assets: assets.map((a) => [a.filename, a.base64.length, a.name, a.description, a.contentType, JSON.stringify(a.headers), JSON.stringify(a.allowDeny)].join(':')),
+			listPkgs: listPkgs.map((p) => p.id),
 			attachments: emailAttachments.map(
 				(a) => [a.filename, a.base64.length, a.name, a.description, a.embedded, a.calendar, a.inline].join(':')
 			),
@@ -229,6 +243,28 @@ if (username) {
 	// types that carry no body file and no uploaded assets: their whole definition is in
 	// data.yaml. (allow/deny is handled separately as it predates this group.)
 	const isConfigOnly = $derived(isSMTP || isWebhook || isOauthProvider || isApiSender);
+	// types whose shipped assets can carry settings (content type, headers, allow deny
+	// lists).
+	const supportsAssetMeta = $derived(isAsset || isHtml);
+	const listKnown = $derived(listKinds(listPkgs, form.namespace));
+	// every list name the assets use, and the variables the content uses as plain
+	// values outside the asset lists, which an installer pick may not share.
+	const usedListNames = $derived(new Set(assets.flatMap((a) => a.allowDeny)));
+	const plainVars = $derived.by(() => {
+		const body = usesBodyEditor ? form.html : '';
+		const text = isAsset ? entityYaml() : `${body} ${isDomain ? form.notFound : ''} ${entityYaml()} ${form.subject} ${form.from} ${form.envelopeFrom}`;
+		return new Set([...text.matchAll(/@@([A-Z_][A-Z0-9_]{0,63})@@/g)].map((m) => m[1]));
+	});
+	const assetErrs = $derived(supportsAssetMeta ? assets.map((a) => assetMetaErrors(a, listKnown, listPicks, plainVars)) : []);
+	const assetMetaValid = $derived(!assetErrs.some(hasErrors));
+	// the package depends on every list package its assets use, so Phishing Club
+	// installs the lists with it. removing the last use drops the dependency.
+	const listDeps = $derived(supportsAssetMeta ? usedListPackages(assets, listPkgs, form.namespace) : []);
+	// installer pick variables named in an asset's allow deny lists: each asks the
+	// installer to pick one of their own allow deny lists.
+	const allowDenyPicks = $derived(
+		new Set(supportsAssetMeta ? assets.flatMap((a) => a.allowDeny.map(pickVarName)).filter(Boolean) : [])
+	);
 	// types whose definition carries content settings beyond the body, shown on the
 	// Settings tab. other types have none, so that tab is not rendered for them.
 	const hasSettings = $derived(form.type === 'email' || isProxy || isDomain || isRemoteBrowser || isReportTemplate);
@@ -336,7 +372,7 @@ if (username) {
 	// use their own fields.
 	const usesBodyEditor = $derived(isHtml || isScript || isProxy || isRemoteBrowser);
 	const canPublish = $derived(
-		!!form.namespace && nameValid && versionValid && hasContent && !busy && !versionExists
+		!!form.namespace && nameValid && versionValid && hasContent && !busy && !versionExists && assetMetaValid
 	);
 	// when seeded from an existing package, it stays a new version only while the
 	// address is unchanged; changing the namespace or name publishes a separate
@@ -432,6 +468,7 @@ if (username) {
 			return;
 		}
 		applySource(ns, name, res.data, { bumpVersion: true, markEditing: true });
+		await loadListPackages(res.data.dependencies);
 	}
 
 	// loadDraft reopens a saved draft (the same author payload) exactly as saved, so
@@ -444,7 +481,31 @@ if (username) {
 			return;
 		}
 		applySource(ns, name, res.data, { bumpVersion: false, markEditing: false });
+		await loadListPackages(res.data.dependencies);
 	}
+
+	// loadListPackages reads the lists of each allow / deny package a loaded version
+	// depends on, so its assets show their lists and keep depending on them. A
+	// package that cannot be read is kept with its error, so the asset can say
+	// so and offer a retry.
+	async function loadListPackages(deps) {
+		const found = await Promise.all(
+			(deps || []).map(async (d) => {
+				const [dns, dname] = String(d.id || '').split('/');
+				if (!dns || !dname) return null;
+				return { ...(await fetchListPackage(api, d.id)), fromDeps: true };
+			})
+		);
+		listPkgs = found.filter(Boolean);
+	}
+
+	// drop list packages no asset uses any more, so they are not kept as
+	// dependencies or checked for name clashes. one that could not be read stays,
+	// since its lists are not known.
+	$effect(() => {
+		const next = listPkgs.filter((p) => p.error || (p.lists || []).some((l) => usedListNames.has(l.name)));
+		if (next.length !== listPkgs.length) listPkgs = next;
+	});
 
 	// applySource populates the form from a published package source or a draft body,
 	// which share one shape. bumpVersion bumps the patch for a new version; markEditing
@@ -498,15 +559,19 @@ if (username) {
 			// *.html or *.js is kept as an asset, not dumped into the body.
 			else if (/\.(html|js|ya?ml)$/i.test(f.path)) form.html = decodeText(f.content);
 		}
-		if (form.type !== 'attachment') assets = imgs;
+		// the per asset settings, read with a YAML parser since their nested headers
+		// would clash with the line helpers below.
+		const meta = form.type === 'allowdeny' ? { assets: [] } : parseAssetMeta(dataYaml);
+		if (form.type !== 'attachment')
+			assets = imgs.map((a) => {
+				const m = meta.assets.find((x) => x.path === a.filename);
+				return { ...a, ...emptyAssetMeta(), ...(m ? { name: m.name, description: m.description, contentType: m.contentType, headers: m.headers, allowDeny: m.allowDeny } : {}) };
+			});
+		listPkgs = [];
+		metaOpen = {};
 		previewFilename = (src.preview || '').replace(/^assets\//, '');
 		// undo yamlStr: strip a double quoted scalar and its escapes back to plain text.
-		const unquote = (s) => {
-			if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
-				return s.slice(1, -1).replace(/\\(.)/g, (_, c) => (c === 'n' ? '\n' : c === 't' ? '\t' : c));
-			}
-			return s;
-		};
+		const unquote = unquoteYamlStr;
 		const grab = (k) => {
 			const m = dataYaml.match(new RegExp('^\\s*' + k + ':\\s*(.+)$', 'm'));
 			return m ? unquote(m[1].trim()) : '';
@@ -620,9 +685,9 @@ if (username) {
 			form.envelopeFrom = grab('envelope from');
 			const tp = grab('addTrackingPixel');
 			form.addTrackingPixel = tp === '' ? true : tp === 'true';
-			const meta = grabAttachmentMeta();
+			const attMeta = grabAttachmentMeta();
 			emailAttachments = pendingAttachments.map((p) => {
-				const mm = meta.find((x) => x.file === p.filename) || {};
+				const mm = attMeta.find((x) => x.file === p.filename) || {};
 				return {
 					filename: p.filename,
 					base64: p.base64,
@@ -635,7 +700,10 @@ if (username) {
 			});
 		}
 		if (form.type === 'allowdeny') {
-			form.allowed = grab('allowed') !== 'false';
+			// read as Phishing Club reads it, so yes, on and the other spellings keep
+			// their kind and a missing value is a deny list, as it installs.
+			const rawAllowed = dataYaml.match(/^\s*allowed:[ \t]*(.*)$/m);
+			form.allowed = (rawAllowed ? scalarBool(rawAllowed[1]) : false) ?? true;
 			form.cidrs = grabBlock('cidrs');
 			form.countryCodes = grabBlock('countryCodes');
 			form.asns = grabBlock('asns');
@@ -690,8 +758,12 @@ if (username) {
 			}
 		}
 		const cfg = {};
-		for (const v of src.variables || [])
+		const picks = {};
+		for (const v of src.variables || []) {
 			cfg[v.name] = { type: v.type, required: v.required, default: v.default ?? '', description: v.description ?? '', options: v.options ?? [] };
+			if (isListPick(v.pick)) picks[v.name] = v.pick;
+		}
+		listPicks = picks;
 		for (const name in cfg) {
 			if (cfg[name].type === 'secret') {
 				cfg[name].required = true;
@@ -704,8 +776,19 @@ if (username) {
 	function folder() {
 		return (form.name || 'package').trim();
 	}
+	// dataYaml is the whole content folder data.yaml: the entity block for the type,
+	// then the per asset settings.
 	function dataYaml() {
-		const title = yamlStr(form.title || form.name || 'Untitled');
+		let y = entityYaml();
+		if (supportsAssetMeta) y += assetsYaml(assets);
+		return y;
+	}
+	function entityYaml() {
+		const rawTitle = form.title || form.name || 'Untitled';
+		const title = yamlStr(rawTitle);
+		// an asset bundle declares no entity; its data.yaml carries the name and the
+		// asset settings only.
+		if (form.type === 'asset') return `name: ${title}\n`;
 		if (form.type === 'email') {
 			let y =
 				`name: ${title}\nemails:\n  - name: ${title}\n    file: email.html\n` +
@@ -759,33 +842,8 @@ if (username) {
 			);
 		}
 		if (form.type === 'allowdeny') {
-			const blk = (key, val) =>
-				val.trim()
-					? `    ${key}: |\n` +
-						val
-							.trim()
-							.split('\n')
-							.map((l) => `      ${l.trim()}`)
-							.join('\n') +
-						'\n'
-					: '';
 			// header match rules are phishingclub's keyRegex/valueRegex pairs, not plain lines.
-			const rules = form.headerRules.filter((h) => h.keyRegex.trim() || h.valueRegex.trim());
-			const headerBlk = rules.length
-				? `    headers:\n` +
-					rules
-						.map((h) => `      - keyRegex: ${yamlStr(h.keyRegex)}\n        valueRegex: ${yamlStr(h.valueRegex)}`)
-						.join('\n') +
-					'\n'
-				: '';
-			return (
-				`name: ${title}\nallowDenies:\n  - name: ${title}\n    allowed: ${form.allowed}\n` +
-				blk('cidrs', form.cidrs) +
-				blk('countryCodes', form.countryCodes) +
-				blk('asns', form.asns) +
-				headerBlk +
-				blk('ja4', form.ja4)
-			);
+			return `name: ${title}\nallowDenies:\n` + listYaml(rawTitle, form);
 		}
 		if (form.type === 'domain') {
 			// the domain entity name is the real domain, which the installer supplies, so it
@@ -941,7 +999,7 @@ if (username) {
 		// an asset bundle has no text body to scan; its files are passed through.
 		// only scan the body editor for types that use it. a domain also has a 404 body.
 		const body = usesBodyEditor ? form.html : '';
-		const text = isAsset ? '' : `${body} ${isDomain ? form.notFound : ''} ${dataYaml()} ${form.subject} ${form.from} ${form.envelopeFrom}`;
+		const text = isAsset ? dataYaml() : `${body} ${isDomain ? form.notFound : ''} ${dataYaml()} ${form.subject} ${form.from} ${form.envelopeFrom}`;
 		const re = /@@([A-Z_][A-Z0-9_]{0,63})@@/g;
 		const set = new Set();
 		let m;
@@ -954,7 +1012,7 @@ if (username) {
 	// lowercase or a hyphen; flag them so the operator fixes it before publishing.
 	const malformedVars = $derived.by(() => {
 		const body = usesBodyEditor ? form.html : '';
-		const text = isAsset ? '' : `${body} ${isDomain ? form.notFound : ''} ${dataYaml()} ${form.subject} ${form.from} ${form.envelopeFrom}`;
+		const text = isAsset ? dataYaml() : `${body} ${isDomain ? form.notFound : ''} ${dataYaml()} ${form.subject} ${form.from} ${form.envelopeFrom}`;
 		const re = /@@([^@\s]{1,80})@@/g;
 		const valid = /^[A-Z_][A-Z0-9_]{0,63}$/;
 		const set = new Set();
@@ -1015,7 +1073,9 @@ if (username) {
 				// is not a shared asset, so it keeps its bare name. the author can edit the
 				// path afterwards.
 				const fn = isAttachment ? file.name : assetFolder(form.namespace, form.name) + file.name;
-				const entry = { filename: fn, base64: b64 };
+				// a file added again at the same path keeps the settings it had.
+				const prev = assets.find((a) => a.filename === fn);
+				const entry = { ...emptyAssetMeta(), ...(prev || {}), filename: fn, base64: b64 };
 				// an attachment is a single file; keep only the latest
 				if (isAttachment) assets = [entry];
 				else assets = [...assets.filter((a) => a.filename !== fn), entry];
@@ -1072,6 +1132,7 @@ if (username) {
 	}
 	function removeAsset(name) {
 		assets = assets.filter((a) => a.filename !== name);
+		delete metaOpen[name];
 		if (previewFilename === name) previewFilename = '';
 	}
 	// an asset path is a relative path under assets/, so subfolders like images/logo.png
@@ -1083,7 +1144,21 @@ if (username) {
 		const next = sanitizeAssetPath(value);
 		const old = assets[i].filename;
 		if (previewFilename === old) previewFilename = next;
+		if (metaOpen[old]) {
+			delete metaOpen[old];
+			metaOpen[next] = true;
+		}
 		assets[i] = { ...assets[i], filename: next };
+	}
+
+	// a short summary of an asset's settings, shown on its row when the panel is closed.
+	function metaSummary(a) {
+		const parts = [];
+		if (a.contentType.trim()) parts.push(a.contentType.trim());
+		const hs = a.headers.filter((h) => h.key.trim()).length;
+		if (hs) parts.push(`${hs} header${hs === 1 ? '' : 's'}`);
+		if (a.allowDeny.length) parts.push(`${a.allowDeny.length} list${a.allowDeny.length === 1 ? '' : 's'}`);
+		return parts.join(' · ');
 	}
 
 	// package meta preview images: shown when browsing the package; NOT shipped in the
@@ -1177,6 +1252,7 @@ if (username) {
 			else if (!versionValid) toast('Version must be semver, like 1.0.0', 'error');
 			else if (versionExists) toast(`Version ${form.version} already exists; bump it`, 'error');
 			else if (!hasContent) toast(isAsset ? 'Add at least one file' : 'Add some content', 'error');
+			else if (!assetMetaValid) toast('Fix the asset settings marked in red', 'error');
 			else toast('Pick a namespace first', 'error');
 			return;
 		}
@@ -1217,7 +1293,10 @@ if (username) {
 			return out;
 		};
 		const files = isAsset
-			? assets.map((a) => ({ path: `assets/${a.filename}`, content: a.base64 }))
+			? [
+					{ path: `content/${folder()}/data.yaml`, content: b64text(dataYaml()) },
+					...assets.map((a) => ({ path: `assets/${a.filename}`, content: a.base64 }))
+				]
 			: isAttachment
 				? [
 						{ path: `content/${folder()}/data.yaml`, content: b64text(dataYaml()) },
@@ -1250,6 +1329,15 @@ if (username) {
 				v.required = true;
 				v.pick = 'oauthProvider';
 			}
+			// a variable named in an asset's allow deny lists asks the installer to pick
+			// one of their own lists, so it is a required pick with no default.
+			if (allowDenyPicks.has(name) && isListPick(listPicks[name])) {
+				v.type = 'text';
+				v.required = true;
+				v.pick = listPicks[name];
+				delete v.default;
+				delete v.options;
+			}
 			return v;
 		});
 		// the package preview: a bundled image shipped under assets/, so skip it for an
@@ -1268,6 +1356,7 @@ if (username) {
 			description: form.description,
 			tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
 			variables,
+			...(listDeps.length ? { dependencies: listDeps.map((p) => ({ id: p.id, range: '*' })) } : {}),
 			files,
 			previewImages: previewMeta.map((p) => ({ content: p.base64 }))
 		};
@@ -1499,42 +1588,7 @@ if (username) {
 		{:else if isAllowDeny}
 			<div class="pc-card p-5 space-y-3">
 				<h2 class="text-sm font-semibold text-gray-700 dark:text-gray-200">Allow / deny rules</h2>
-				<div class="flex gap-4 text-sm">
-					<label class="flex items-center gap-1.5"><input type="radio" bind:group={form.allowed} value={true} /> Allow list</label>
-					<label class="flex items-center gap-1.5"><input type="radio" bind:group={form.allowed} value={false} /> Deny list</label>
-				</div>
-				<div class="grid gap-3 sm:grid-cols-2">
-					<label class="block text-sm">
-						<span class="pc-label">CIDRs</span> <span class="text-gray-700 dark:text-gray-200 text-xs font-normal">(one per line)</span>
-						<textarea bind:value={form.cidrs} rows="3" placeholder={'10.0.0.0/8\n192.168.0.0/16'} class="mt-1 pc-control font-mono text-xs"></textarea>
-					</label>
-					<label class="block text-sm">
-						<span class="pc-label">Country codes</span> <span class="text-gray-700 dark:text-gray-200 text-xs font-normal">(one per line)</span> <span class="pc-optional">optional</span>
-						<textarea bind:value={form.countryCodes} rows="3" placeholder={'US\nGB'} class="mt-1 pc-control font-mono text-xs"></textarea>
-					</label>
-					<label class="block text-sm">
-						<span class="pc-label">ASNs</span> <span class="text-gray-700 dark:text-gray-200 text-xs font-normal">(one per line)</span> <span class="pc-optional">optional</span>
-						<textarea bind:value={form.asns} rows="2" placeholder={'AS13335\nAS15169'} class="mt-1 pc-control font-mono text-xs"></textarea>
-					</label>
-					<label class="block text-sm sm:col-span-2">
-						<span class="pc-label">JA4 fingerprints</span> <span class="text-gray-700 dark:text-gray-200 text-xs font-normal">(one per line)</span> <span class="pc-optional">optional</span>
-						<textarea bind:value={form.ja4} rows="2" placeholder={'t13d1516h2_8daaf6152771_b186095e22b6'} class="mt-1 pc-control font-mono text-xs"></textarea>
-					</label>
-				</div>
-				<div>
-					<div class="flex items-center justify-between">
-						<span class="flex items-center gap-2"><span class="pc-label">Header matches</span> <span class="pc-optional">optional</span></span>
-						<Button variant="blue" size="xs" onclick={() => (form.headerRules = [...form.headerRules, { keyRegex: '', valueRegex: '' }])}>+ Add header rule</Button>
-					</div>
-					<p class="pc-hint">Each rule is a header name regex and a value regex (both matched against the request).</p>
-					{#each form.headerRules as rule, ri (ri)}
-						<div class="mt-2 flex flex-wrap items-center gap-2">
-							<input bind:value={rule.keyRegex} placeholder="^X-Forwarded-For$" class="pc-control flex-1 min-w-[10rem] font-mono text-xs" />
-							<input bind:value={rule.valueRegex} placeholder="1\.2\.3\.4" class="pc-control flex-1 min-w-[10rem] font-mono text-xs" />
-							<Button variant="danger" size="xs" onclick={() => (form.headerRules = form.headerRules.filter((_, i) => i !== ri))}>Remove</Button>
-						</div>
-					{/each}
-				</div>
+				<AllowDenyRules bind:list={form} />
 				<p class="text-xs text-gray-700 dark:text-gray-200">Provide at least one rule set. Use <code>@@VARIABLES@@</code> for values the installer fills in.</p>
 			</div>
 		{:else if isAttachment}
@@ -1552,7 +1606,7 @@ if (username) {
 			<div class="pc-card p-5">
 				<h2 class="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">Asset bundle</h2>
 				{#if assets.length}
-					<ul class="mt-3 space-y-1 text-sm">{#each assets as a (a.filename)}<li><code>{assetRef(a.filename)}</code></li>{/each}</ul>
+					<ul class="mt-1 space-y-1 text-sm">{#each assets as a (a.filename)}<li><code>{assetRef(a.filename)}</code></li>{/each}</ul>
 				{/if}
 			</div>
 		{:else if isSMTP}
@@ -1731,7 +1785,23 @@ if (username) {
 									<Button variant={previewFilename === a.filename ? 'blue' : 'neutral'} size="xs" onclick={() => setPreview(a.filename)} title="Show this image as the package thumbnail">{previewFilename === a.filename ? 'Preview ✓' : 'Set preview'}</Button>
 								{/if}
 								{#if !isAttachment}<Button variant="neutral" size="xs" onclick={() => copyRef(assetRef(a.filename))}>Copy ref</Button>{/if}
+								{#if supportsAssetMeta}
+									<Button
+										variant={metaOpen[a.filename] ? 'blue' : 'neutral'}
+										size="xs"
+										onclick={() => (metaOpen[a.filename] = !metaOpen[a.filename])}
+										aria-expanded={!!metaOpen[a.filename]}
+										title="Name, content type, response headers and allow / deny lists">Settings</Button>
+								{/if}
 								<Button variant="danger" size="xs" onclick={() => removeAsset(a.filename)}>Remove</Button>
+								{#if supportsAssetMeta && !metaOpen[a.filename] && (hasAssetMeta(a) || hasErrors(assetErrs[i]))}
+									<p class="basis-full text-xs {hasErrors(assetErrs[i]) ? 'text-red-600 dark:text-red-400' : 'text-gray-600 dark:text-gray-300'}">
+										{hasErrors(assetErrs[i]) ? 'Settings have a problem. Open Settings to fix it.' : [a.name.trim(), metaSummary(a)].filter(Boolean).join(' · ')}
+									</p>
+								{/if}
+								{#if supportsAssetMeta && metaOpen[a.filename]}
+									<div class="basis-full"><AssetSettings bind:asset={assets[i]} bind:listPkgs bind:listPicks usedNames={usedListNames} {plainVars} errors={assetErrs[i]} namespace={form.namespace} /></div>
+								{/if}
 							</li>
 						{/each}
 					</ul>
@@ -1771,6 +1841,9 @@ if (username) {
 							<div class="rounded-md border border-gray-100 dark:border-gray-800 p-2 space-y-2">
 								<div class="flex flex-wrap items-center gap-2 text-sm">
 									<code class="min-w-[10rem] shrink-0 whitespace-nowrap">@@{v}@@</code>
+									{#if allowDenyPicks.has(v) && isListPick(listPicks[v])}
+										<span class="text-gray-700 dark:text-gray-200">The installer picks one of their allow / deny lists. Always required.</span>
+									{:else}
 									<select value={varCfg[v].type} onchange={(e) => setVarType(v, e.currentTarget.value)} class="pc-control w-auto px-2 py-1">
 										<option value="text">text</option>
 										<option value="domain">domain</option>
@@ -1795,6 +1868,7 @@ if (username) {
 										{:else}
 											<input bind:value={varCfg[v].default} placeholder="default" class="pc-control w-auto px-2 py-1" />
 										{/if}
+									{/if}
 									{/if}
 								</div>
 								<input bind:value={varCfg[v].description} placeholder="Describe this variable so the installer knows what to enter" class="pc-control px-2 py-1 text-xs" />

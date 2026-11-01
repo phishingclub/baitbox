@@ -692,6 +692,8 @@ func (a *AdminAPI) PackageSource(c *gin.Context) {
 		"dependencies":   m.Dependencies,
 		"shareVariables": m.ShareVariables,
 		"attachments":    service.PackageAttachments(files),
+		"assets":         service.PackageAssets(files),
+		"lists":          service.PackageLists(files),
 		"files":          out,
 	})
 }
@@ -838,9 +840,10 @@ func (a *AdminAPI) VersionYank(c *gin.Context) {
 		return
 	}
 	a.logAudit(c, "Version.Yank", true, map[string]any{
-		"package": pkgID, "version": c.Param("version"), "bundlesOverCap": warnings,
+		"package": pkgID, "version": c.Param("version"),
+		"bundlesOverCap": warnings.BundlesOverCap, "assetListBreaks": warnings.AssetLists,
 	})
-	c.JSON(http.StatusOK, gin.H{"status": "updated", "warnings": bundleCapWarnings(warnings)})
+	c.JSON(http.StatusOK, gin.H{"status": "updated", "warnings": versionWarnings(warnings)})
 }
 
 // VersionDelete removes one version of a package.
@@ -858,21 +861,26 @@ func (a *AdminAPI) VersionDelete(c *gin.Context) {
 		return
 	}
 	a.logAudit(c, "Version.Delete", true, map[string]any{
-		"package":        c.Param("ns") + "/" + c.Param("name"),
-		"version":        c.Param("version"),
-		"bundlesOverCap": warnings,
+		"package":         c.Param("ns") + "/" + c.Param("name"),
+		"version":         c.Param("version"),
+		"bundlesOverCap":  warnings.BundlesOverCap,
+		"assetListBreaks": warnings.AssetLists,
 	})
-	c.JSON(http.StatusOK, gin.H{"status": "deleted", "warnings": bundleCapWarnings(warnings)})
+	c.JSON(http.StatusOK, gin.H{"status": "deleted", "warnings": versionWarnings(warnings)})
 }
 
-// bundleCapWarnings turns the bundles a version change pushed over the install
-// cap into messages for the operator. It returns an empty list, never null.
-func bundleCapWarnings(bundles []string) []string {
+// versionWarnings turns what a version change broke into messages for the
+// operator: the bundles it pushed over the install cap and the packages whose
+// asset lists stopped resolving. It returns an empty list, never null.
+func versionWarnings(w service.VersionWarnings) []string {
 	out := []string{}
-	for _, b := range bundles {
+	for _, b := range w.BundlesOverCap {
 		out = append(out, fmt.Sprintf("Bundle %s now unpacks to more than the %d MiB Phishing Club "+
 			"installs, so it will fail to install until the bundle or this package changes",
 			b, service.MaxBundleInstallBytes>>20))
+	}
+	for _, l := range w.AssetLists {
+		out = append(out, "Package "+l)
 	}
 	return out
 }

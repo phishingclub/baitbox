@@ -123,7 +123,8 @@ func TestDependencyChangeRefusedWhenBundleWouldExceed(t *testing.T) {
 	// yanking or deleting 1.0.0 makes latest serve the large 0.9.0. Neither is
 	// ever refused, so a broken version can always be pulled; the bundle that now
 	// exceeds the cap is reported instead.
-	warn, err := svc.YankVersion("team", "a", "1.0.0", true)
+	w, err := svc.YankVersion("team", "a", "1.0.0", true)
+	warn := w.BundlesOverCap
 	if err != nil || len(warn) != 1 || !strings.Contains(warn[0], "team/kit") {
 		t.Fatalf("yank: want success with a team/kit warning, got %v, %v", warn, err)
 	}
@@ -131,10 +132,11 @@ func TestDependencyChangeRefusedWhenBundleWouldExceed(t *testing.T) {
 		t.Fatal("yank was not applied")
 	}
 	// restoring it moves latest back to the small version, so no warning.
-	if warn, err := svc.YankVersion("team", "a", "1.0.0", false); err != nil || len(warn) != 0 {
-		t.Fatalf("unyank: got %v, %v", warn, err)
+	if w, err := svc.YankVersion("team", "a", "1.0.0", false); err != nil || len(w.BundlesOverCap) != 0 {
+		t.Fatalf("unyank: got %v, %v", w, err)
 	}
-	warn, err = svc.DeleteVersion("team", "a", "1.0.0")
+	w, err = svc.DeleteVersion("team", "a", "1.0.0")
+	warn = w.BundlesOverCap
 	if err != nil || len(warn) != 1 || !strings.Contains(warn[0], "team/kit") {
 		t.Fatalf("delete: want success with a team/kit warning, got %v, %v", warn, err)
 	}

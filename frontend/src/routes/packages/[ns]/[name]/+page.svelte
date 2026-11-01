@@ -328,8 +328,10 @@
 		}
 		return n > 0 && control / n > 0.1;
 	}
+	// an asset bundle's data.yaml only holds the asset settings, which show in their
+	// own card, so its preview stays the file gallery.
 	const contentFiles = $derived.by(() => {
-		if (!source?.files) return [];
+		if (!source?.files || source.type === 'asset') return [];
 		return source.files
 			.filter((f) => f.path.startsWith('content/') && !/\.html$/i.test(f.path))
 			.map((f) => {
@@ -365,6 +367,19 @@
 				};
 			});
 	});
+
+	// per asset settings from the data.yaml assets blocks: content type, response
+	// headers and allow deny list names. an @@NAME@@ entry is a list the installer picks.
+	const assetSettings = $derived.by(() =>
+		(source?.assets || []).map((a) => ({
+			...a,
+			lists: (a.allowDeny || []).map((n) => {
+				const m = n.match(/^@@([A-Z_][A-Z0-9_]{0,63})@@$/);
+				return { label: n, pick: !!m };
+			})
+		}))
+	);
+	const assetSettingsByPath = $derived(new Map(assetSettings.map((a) => [a.path, a])));
 
 	// email attachments shipped under content/<folder>/ and linked to the email on
 	// install. the source API returns the structured list; match each entry to its
@@ -735,6 +750,12 @@
 								<div class="flex h-24 items-center justify-center bg-gray-50 text-xs text-gray-700 dark:bg-gray-900 dark:text-gray-200">file</div>
 							{/if}
 							<div class="truncate px-2 pt-1 text-xs text-gray-800 dark:text-gray-100" title={f.name}>{f.name}</div>
+							{#if assetSettingsByPath.get(f.name)}
+								{@const st = assetSettingsByPath.get(f.name)}
+								<div class="truncate px-2 text-xs text-gray-600 dark:text-gray-300" title={st.contentType || ''}>
+									{[st.contentType, st.headers.length ? `${st.headers.length} header${st.headers.length === 1 ? '' : 's'}` : '', st.allowDeny.length ? `${st.allowDeny.length} list${st.allowDeny.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ')}
+								</div>
+							{/if}
 							<div class="flex items-center justify-between gap-2 px-2 pb-1">
 								<span class="text-xs text-gray-700 dark:text-gray-200">{(f.bytes / 1024).toFixed(1)} KB</span>
 								<Button variant="neutral" size="xs" onclick={() => copyRef(f.name)} title={`Copy ${assetRef(f.name)}`} class="shrink-0">copy ref</Button>
@@ -749,6 +770,47 @@
 			{/if}
 		</Card>
 	</div>
+
+	{#if assetSettings.length}
+		<Card padding="md" class="mt-6">
+			<div class="flex items-center gap-2">
+				<h2 class="text-sm font-semibold text-gray-900 dark:text-white">Asset settings</h2>
+				<Help title="Asset settings">
+					<p>How Phishing Club serves each file after install: its content type, extra response headers and the allow / deny lists that decide who gets it.</p>
+					<p>A list written as <code>@@NAME@@</code> is one the installer picks from their own lists.</p>
+				</Help>
+			</div>
+			<ul class="mt-3 space-y-3">
+				{#each assetSettings as a (a.file)}
+					<li class="rounded-lg border border-gray-200 dark:border-gray-800 p-3">
+						<div class="flex flex-wrap items-center gap-2">
+							<span class="font-medium text-gray-900 dark:text-gray-100">{a.name || a.path.split('/').pop()}</span>
+							<code class="text-xs text-gray-700 dark:text-gray-200">{assetRef(a.path)}</code>
+						</div>
+						{#if a.description}<p class="mt-1 text-xs text-gray-700 dark:text-gray-200">{a.description}</p>{/if}
+						<dl class="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-[8rem_1fr]">
+							<dt class="pc-label">Content type</dt>
+							<dd class="font-mono text-gray-800 dark:text-gray-100">{a.contentType || 'From the file extension'}</dd>
+							{#if a.headers.length}
+								<dt class="pc-label">Headers</dt>
+								<dd class="space-y-0.5">
+									{#each a.headers as h, hi (hi)}<div class="break-all font-mono text-gray-800 dark:text-gray-100">{h.key}: {h.value}</div>{/each}
+								</dd>
+							{/if}
+							{#if a.lists.length}
+								<dt class="pc-label">Allow / deny</dt>
+								<dd class="flex flex-wrap gap-1.5">
+									{#each a.lists as l, li (li)}
+										<span class="rounded px-2 py-0.5 bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-100">{l.label}{#if l.pick}<span class="ml-1 text-gray-600 dark:text-gray-300">installer picks</span>{/if}</span>
+									{/each}
+								</dd>
+							{/if}
+						</dl>
+					</li>
+				{/each}
+			</ul>
+		</Card>
+	{/if}
 
 	{#if attachmentList.length}
 		<Card padding="md" class="mt-6">

@@ -55,15 +55,16 @@ func TestPrivateRegistryTreatsPublicAsPrivate(t *testing.T) {
 	}
 	deps := []manifest.Dependency{{ID: "shared/logo"}}
 	allPublic := func(string) string { return database.VisibilityPublic }
-	if err := pub.checkDeps(manifest.TypePage, "kits", database.VisibilityPublic, deps, allPublic, nil); err != nil {
+	isPage := func(string, string) (string, bool) { return manifest.TypePage, true }
+	if err := pub.checkDeps(manifest.TypeBundle, "kits", database.VisibilityPublic, deps, allPublic, isPage); err != nil {
 		t.Fatalf("public registry, public dependency: %v", err)
 	}
-	// on a private registry the page and its dependency are both private, and a
+	// on a private registry the bundle and its dependency are both private, and a
 	// private package may only use packages of its own namespace.
-	if err := priv.checkDeps(manifest.TypePage, "kits", database.VisibilityPublic, deps, allPublic, nil); err == nil {
+	if err := priv.checkDeps(manifest.TypeBundle, "kits", database.VisibilityPublic, deps, allPublic, isPage); err == nil {
 		t.Fatal("private registry let a package use another namespace")
 	}
-	if err := priv.checkDeps(manifest.TypePage, "shared", database.VisibilityPublic, deps, allPublic, nil); err != nil {
+	if err := priv.checkDeps(manifest.TypeBundle, "shared", database.VisibilityPublic, deps, allPublic, isPage); err != nil {
 		t.Fatalf("private registry, same namespace: %v", err)
 	}
 }

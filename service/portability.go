@@ -811,6 +811,17 @@ func (s *RegistryService) applyBundle(b *exportBundle, stored map[string]bool) (
 					changed = true
 					break
 				}
+				err = s.checkArchiveAssetLists(nsName, vv.m, vv.dto.ArchiveSha, importLatest(s.repo, plans))
+				if err != nil {
+					if !IsValidation(err) {
+						return nil, err
+					}
+					refuse(pl, fmt.Sprintf(
+						"not imported because version %s has an allow / deny list that does not resolve: %v",
+						vv.m.Version, err))
+					changed = true
+					break
+				}
 			}
 		}
 		if changed {
@@ -1090,6 +1101,10 @@ func (s *RegistryService) recheckImportTx(
 			if err != nil {
 				return fmt.Errorf("%w: %s@%s: %v", ErrConcurrentChange, key, vv.m.Version, err)
 			}
+			err = s.checkArchiveAssetLists(nsName, vv.m, vv.dto.ArchiveSha, importLatest(tx, plans))
+			if err != nil {
+				return fmt.Errorf("%w: %s@%s: %v", ErrConcurrentChange, key, vv.m.Version, err)
+			}
 		}
 	}
 	over, err := s.importBundleRefusals(tx, plans, order)
@@ -1218,6 +1233,18 @@ func (s *RegistryService) importBundleRefusals(
 						"the local bundle %s unpack to more than the %s Phishing Club installs",
 						over[0], utils.FormatMiB(s.bundleCap))
 				}
+			}
+		}
+	}
+	breaks, err := s.dependentAssetListBreaks(r, changed, before, after)
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range breaks {
+		for _, id := range b.changed {
+			if _, done := out[id]; !done {
+				out[id] = fmt.Sprintf("not imported because its new latest version would stop "+
+					"%s from installing: %s", b.id, b.why)
 			}
 		}
 	}

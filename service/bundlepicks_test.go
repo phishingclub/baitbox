@@ -84,6 +84,28 @@ func TestBundleSharedPickMismatchBetweenMembers(t *testing.T) {
 	}
 }
 
+// a list pick shared by two members must be an allowDeny pick in both, since Phishing Club fills the shared name once.
+func TestBundleSharedAllowDenyPick(t *testing.T) {
+	pick := manifest.Variable{Name: "SCANNER_LIST", Type: manifest.VarText, Required: true, Pick: manifest.PickAllowDeny}
+	plain := manifest.Variable{Name: "SCANNER_LIST", Type: manifest.VarText, Required: true}
+	svc := newTestRegistry(t)
+	mustEnsureNS(t, svc, "team", database.VisibilityPrivate)
+	publishPageVars(t, svc, "team", "a", []manifest.Variable{pick})
+	publishPageVars(t, svc, "team", "b", []manifest.Variable{pick})
+	publishPageVars(t, svc, "team", "c", []manifest.Variable{plain})
+	if err := publishBundleVars(svc, "team", "same", []manifest.Dependency{
+		{ID: "team/a", Range: "^1.0.0"}, {ID: "team/b", Range: "^1.0.0"},
+	}, nil, nil); err != nil {
+		t.Fatalf("same allowDeny pick refused: %v", err)
+	}
+	err := publishBundleVars(svc, "team", "mixed", []manifest.Dependency{
+		{ID: "team/a", Range: "^1.0.0"}, {ID: "team/c", Range: "^1.0.0"},
+	}, nil, nil)
+	if err == nil || !IsValidation(err) || !strings.Contains(err.Error(), "an allowDeny pick") {
+		t.Fatalf("want refusal of a mixed allowDeny pick, got %v", err)
+	}
+}
+
 func TestImportRefusesBundleSharedPickMismatch(t *testing.T) {
 	member, _, err := BuildArchive(PackageSpec{
 		ID: "acme/lure", Type: manifest.TypePage, Version: "1.0.0",

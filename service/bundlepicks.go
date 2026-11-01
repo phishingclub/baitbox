@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"github.com/phishingclub/baitbox/database"
 	"github.com/phishingclub/baitbox/manifest"
 	"github.com/phishingclub/baitbox/repository"
@@ -52,6 +54,9 @@ func checkBundleSharedPicks(m *manifest.Manifest, latest latestFunc) error {
 func pickDesc(kind string) string {
 	if kind == "" {
 		return "a plain value"
+	}
+	if strings.ContainsRune("aeiouAEIOU", rune(kind[0])) {
+		return "an " + kind + " pick"
 	}
 	return "a " + kind + " pick"
 }

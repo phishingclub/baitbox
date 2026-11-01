@@ -33,25 +33,25 @@ func TestPublishRejectsTypeChange(t *testing.T) {
 	}
 }
 
-// TestNonBundleDepVisibility: the visibility rule covers every package type, so a
-// public page cannot name a private package.
-func TestNonBundleDepVisibility(t *testing.T) {
+// TestNonBundleDepsSameNamespaceLists: a package other than a bundle may only
+// depend on allow / deny packages in its own namespace, so a public page can
+// never name a private package.
+func TestNonBundleDepsSameNamespaceLists(t *testing.T) {
 	svc := newTestRegistry(t)
 	mustEnsureNS(t, svc, "priv", database.VisibilityPrivate)
 	mustEnsureNS(t, svc, "pub", database.VisibilityPublic)
-	publishPage(t, svc, "priv", "base", "1.0.0")
+	authorList(t, svc, "priv", "base", "1.0.0", "Base", false)
 	err := publishPageWithDeps(svc, "pub", "page", "1.0.0", []manifest.Dependency{{ID: "priv/base", Range: "^1.0.0"}})
-	if err == nil || !strings.Contains(err.Error(), "cannot reference the private package") {
-		t.Fatalf("public page with private dep: want rejection, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "not in the namespace pub") {
+		t.Fatalf("page with a dep in another namespace: want rejection, got %v", err)
 	}
-	// a private page in another namespace cannot name it either.
-	mustEnsureNS(t, svc, "other", database.VisibilityPrivate)
-	if err := publishPageWithDeps(svc, "other", "page", "1.0.0", []manifest.Dependency{{ID: "priv/base", Range: "^1.0.0"}}); err == nil {
-		t.Fatal("private page naming another private namespace was accepted")
+	publishPage(t, svc, "priv", "plain", "1.0.0")
+	err = publishPageWithDeps(svc, "priv", "page", "1.0.0", []manifest.Dependency{{ID: "priv/plain", Range: "*"}})
+	if err == nil || !strings.Contains(err.Error(), "only depend on allow / deny packages") {
+		t.Fatalf("page with a page dep: want rejection, got %v", err)
 	}
-	// the same namespace is fine.
-	if err := publishPageWithDeps(svc, "priv", "page", "1.0.0", []manifest.Dependency{{ID: "priv/base", Range: "^1.0.0"}}); err != nil {
-		t.Fatalf("own namespace dep: %v", err)
+	if err := publishPageWithDeps(svc, "priv", "page", "1.0.0", []manifest.Dependency{{ID: "priv/base", Range: "*"}}); err != nil {
+		t.Fatalf("own namespace list dep: %v", err)
 	}
 }
 
@@ -80,21 +80,24 @@ func TestVisibilityFlipChecksOlderVersions(t *testing.T) {
 	}
 }
 
-// TestMoveChecksEveryVersion: moving a package into a public namespace is refused
+// TestMoveChecksEveryVersion: moving a bundle into a public namespace is refused
 // when any of its versions names a private package.
 func TestMoveChecksEveryVersion(t *testing.T) {
 	svc := newTestRegistry(t)
 	mustEnsureNS(t, svc, "team", database.VisibilityPrivate)
 	mustEnsureNS(t, svc, "pub", database.VisibilityPublic)
 	publishPage(t, svc, "team", "base", "1.0.0")
-	if err := publishPageWithDeps(svc, "team", "page", "1.0.0", []manifest.Dependency{{ID: "team/base", Range: "^1.0.0"}}); err != nil {
-		t.Fatalf("page 1.0.0: %v", err)
+	publishPage(t, svc, "pub", "open", "1.0.0")
+	if _, err := publishBundle(svc, "team", "kit", "1.0.0", []manifest.Dependency{{ID: "team/base", Range: "*"}}); err != nil {
+		t.Fatalf("kit 1.0.0: %v", err)
 	}
-	publishPage(t, svc, "team", "page", "2.0.0")
-	if err := svc.MovePackage("team", "page", "pub", ""); err == nil {
+	if _, err := publishBundle(svc, "team", "kit", "2.0.0", []manifest.Dependency{{ID: "pub/open", Range: "*"}}); err != nil {
+		t.Fatalf("kit 2.0.0: %v", err)
+	}
+	if err := svc.MovePackage("team", "kit", "pub", ""); err == nil {
 		t.Fatal("move that exposes an older version's private dep was accepted")
 	}
-	if _, _, _, err := svc.Resolve("team", "page", "latest"); err != nil {
+	if _, _, _, err := svc.Resolve("team", "kit", "latest"); err != nil {
 		t.Fatalf("refused move changed the package: %v", err)
 	}
 }

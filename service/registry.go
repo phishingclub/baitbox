@@ -258,6 +258,17 @@ func (s *RegistryService) Publish(
 		Size:              size,
 		UnpackedSize:      unpacked,
 	}
+	// a new latest list version must keep serving every list name the packages
+	// that depend on it use, with the same kind. A rename, a removal or a change
+	// between allow and deny is refused. This reads every dependent archive, so
+	// it runs before the transaction and the transaction only confirms that
+	// nothing it read changed.
+	var listReads *listBreakReads
+	if m.Type == manifest.TypeAllowDeny {
+		if listReads, err = s.checkListVersionBreaks(m, pkg.ID, v); err != nil {
+			return nil, err
+		}
+	}
 	if s.beforeWriteCommit != nil {
 		s.beforeWriteCommit()
 	}
@@ -288,6 +299,11 @@ func (s *RegistryService) Publish(
 		if derr != nil {
 			return derr
 		}
+		// every allow deny list an asset uses must resolve to a pick variable or a
+		// list of an allowdeny package this version depends on in its namespace.
+		if err := s.checkArchiveAssetLists(namespaceName, m, sha, repoLatest(tx)); err != nil {
+			return err
+		}
 		// Phishing Club refuses a bundle that unpacks to more than its install cap
 		// together with the latest version of every reference, or whose shared pick
 		// variables disagree with them. A bundle is checked itself; any other package
@@ -311,6 +327,13 @@ func (s *RegistryService) Publish(
 			}
 			if err := checkDependentBundlePicks(tx, m.ID, after); err != nil {
 				return err
+			}
+			// the list breaks were found before this transaction; confirm that
+			// nothing they were found from changed since.
+			if listReads != nil {
+				if err := verifyListBreakReads(tx, m, listReads); err != nil {
+					return err
+				}
 			}
 		}
 		if err := tx.CreateVersion(v); err != nil {
@@ -440,7 +463,10 @@ func repoDepType(r *repository.Registry) func(string, string) (string, bool) {
 
 // checkDeps enforces the dependency rules for a package of pkgType living in
 // pkgNSName with pkgVisibility. depType resolves a dependency to its package type
-// (and whether it exists); it is only consulted for a bundle.
+// (and whether it exists). A bundle references packages that are not bundles or
+// templates. An allow / deny package has no dependencies. Any other package may
+// only depend on allow / deny packages in its own namespace, whose lists its
+// assets use.
 func (s *RegistryService) checkDeps(
 	pkgType, pkgNSName, pkgVisibility string,
 	deps []manifest.Dependency,
@@ -459,6 +485,29 @@ func (s *RegistryService) checkDeps(
 			}
 			if t == manifest.TypeBundle || t == manifest.TypeTemplate {
 				return invalidf("a bundle cannot reference another bundle or template (%q)", d.ID)
+			}
+		}
+	} else if pkgType == manifest.TypeAllowDeny {
+		if len(deps) > 0 {
+			return invalidf("an allow / deny package cannot have dependencies")
+		}
+	} else {
+		for _, d := range deps {
+			dns, dname, ok := splitID(d.ID)
+			if !ok {
+				return invalidf("invalid dependency id %q", d.ID)
+			}
+			if dns != pkgNSName {
+				return invalidf("the dependency %s is not in the namespace %s; a package can only depend on "+
+					"allow / deny packages in its own namespace", d.ID, pkgNSName)
+			}
+			t, exists := depType(dns, dname)
+			if !exists {
+				return invalidf("the dependency %s does not exist", d.ID)
+			}
+			if t != manifest.TypeAllowDeny {
+				return invalidf("the dependency %s is a %s package; a package can only depend on allow / deny packages",
+					d.ID, t)
 			}
 		}
 	}
@@ -989,20 +1038,45 @@ func (s *RegistryService) DeletePreview(nsName, name, sha string) error {
 	return nil
 }
 
+// VersionWarnings is what a yank, unyank or version delete breaks, which the
+// change is never refused for: the bundles that now unpack to more than the
+// install cap, and the packages whose asset lists no longer resolve.
+type VersionWarnings struct {
+	BundlesOverCap []string
+	AssetLists     []string
+}
+
 // YankVersion sets or clears the yanked flag on a version. It is never refused
-// for the bundle install cap, so a broken version can always be yanked. It
-// returns the bundles that reference the package and now unpack to more than the
-// cap because the change moved latest, so the caller can warn about them.
-func (s *RegistryService) YankVersion(nsName, name, version string, yanked bool) ([]string, error) {
+// for the bundle install cap or for the packages that use its lists, so a broken
+// version can always be yanked. It returns what the change broke, so the caller
+// can warn about it.
+func (s *RegistryService) YankVersion(nsName, name, version string, yanked bool) (VersionWarnings, error) {
 	_, pkg, v, err := s.Resolve(nsName, name, version)
 	if err != nil {
-		return nil, err
+		return VersionWarnings{}, err
 	}
 	before, _ := s.repo.ListVersions(pkg.ID)
 	if err := s.repo.YankVersion(v.ID, yanked); err != nil {
-		return nil, err
+		return VersionWarnings{}, err
 	}
-	return s.bundleCapWarnings(pkg, nsName+"/"+name, before), nil
+	return s.versionWarnings(pkg, nsName+"/"+name, before), nil
+}
+
+// versionWarnings collects the warnings for a change already applied to the
+// versions of pkg, given the version list before it.
+func (s *RegistryService) versionWarnings(
+	pkg *database.Package, id string, before []database.PackageVersion,
+) VersionWarnings {
+	w := VersionWarnings{BundlesOverCap: s.bundleCapWarnings(pkg, id, before)}
+	if pkg.Type == manifest.TypeAllowDeny && before != nil {
+		after, err := s.repo.ListVersions(pkg.ID)
+		if err != nil {
+			w.AssetLists = []string{fmt.Sprintf("could not check the packages that use the lists of %s: %v", id, err)}
+			return w
+		}
+		w.AssetLists = s.assetListWarnings(id, withVersions(id, before, repoLatest(s.repo)), after)
+	}
+	return w
 }
 
 // seedPackageMeta sets the package's descriptive fields from the manifest once, when
@@ -1033,26 +1107,28 @@ func (s *RegistryService) UpdatePackageMeta(nsName, name, title, description, ta
 
 // DeleteVersion removes one version and cleans up the archive blob if nothing
 // else references it. Like YankVersion it is never refused for the bundle
-// install cap and returns the bundles that now exceed it. The only version of a package is refused with ErrLastVersion.
-func (s *RegistryService) DeleteVersion(nsName, name, version string) ([]string, error) {
+// install cap or for the packages that use its lists, and returns what the
+// change broke. The only version of a package is refused with ErrLastVersion.
+func (s *RegistryService) DeleteVersion(nsName, name, version string) (VersionWarnings, error) {
 	_, pkg, v, err := s.Resolve(nsName, name, version)
 	if err != nil {
-		return nil, err
+		return VersionWarnings{}, err
 	}
 	before, err := s.repo.ListVersions(pkg.ID)
 	if err != nil {
-		return nil, err
+		return VersionWarnings{}, err
 	}
 	sha, err := s.repo.DeleteVersion(v.ID)
 	// a package with no version would still be listed but resolve to nothing.
 	if errors.Is(err, repository.ErrLastVersion) {
-		return nil, ErrLastVersion
+		return VersionWarnings{}, ErrLastVersion
 	}
 	if err != nil {
-		return nil, err
+		return VersionWarnings{}, err
 	}
+	w := s.versionWarnings(pkg, nsName+"/"+name, before)
 	s.cleanupBlob(sha)
-	return s.bundleCapWarnings(pkg, nsName+"/"+name, before), nil
+	return w, nil
 }
 
 // DependentsOf returns the ids (namespace/name) of packages with any stored
@@ -1282,6 +1358,23 @@ func (s *RegistryService) MovePackage(fromNs, name, toNs, toName string) error {
 	versions, err := s.repo.ListVersions(pkg.ID)
 	if err != nil {
 		return err
+	}
+	// a package other than a bundle can only depend on allow / deny packages in
+	// its own namespace, so moving one that has such dependencies would leave them
+	// in the old namespace.
+	if fromNs != toNs && pkg.Type != manifest.TypeBundle {
+		for i := range versions {
+			m, perr := manifest.Parse([]byte(versions[i].Manifest))
+			if perr != nil {
+				return fmt.Errorf("stored manifest of %s@%s is unreadable: %w", fromNs+"/"+name, versions[i].Version, perr)
+			}
+			if len(m.Dependencies) > 0 {
+				return invalidf("version %s depends on the allow / deny package %s in %s, and a package can only "+
+					"depend on lists in its own namespace; move or recreate the lists in %s first and publish a "+
+					"version that uses them, or delete the versions that depend on %s",
+					versions[i].Version, m.Dependencies[0].ID, fromNs, toNs, fromNs)
+			}
+		}
 	}
 	// moving into a namespace of different visibility can break the dependency
 	// invariant (a public package may only reference public namespaces), so

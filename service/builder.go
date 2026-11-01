@@ -66,6 +66,9 @@ func BuildArchive(spec PackageSpec, files map[string][]byte) ([]byte, *manifest.
 	if len(names) == 0 {
 		return nil, nil, fmt.Errorf("a package needs at least one content or asset file")
 	}
+	if err := validateFileAssetBlocks(spec.Type, files); err != nil {
+		return nil, nil, err
+	}
 	sort.Strings(names)
 
 	entries := make([]manifest.Entry, 0, len(names))

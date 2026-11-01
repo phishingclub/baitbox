@@ -28,6 +28,20 @@ func TestValidateOK(t *testing.T) {
 	}
 }
 
+func TestValidateShareVariablesBundleOnly(t *testing.T) {
+	m := baseManifest()
+	off := false
+	m.ShareVariables = &off
+	if err := m.Validate(); err == nil || !strings.Contains(err.Error(), "only to a bundle") {
+		t.Fatalf("shareVariables on a page: err = %v", err)
+	}
+	m.Type = TypeBundle
+	m.Dependencies = []Dependency{{ID: "acme-corp/page", Range: "*"}}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("shareVariables on a bundle rejected: %v", err)
+	}
+}
+
 func TestValidateBadID(t *testing.T) {
 	m := baseManifest()
 	m.ID = "NoSlash"
@@ -260,6 +274,10 @@ func TestValidatePickRules(t *testing.T) {
 		{"pick with default", Variable{Name: "OWN_PAGE", Type: VarText, Pick: "page", Default: &def}, false},
 		{"unknown kind", Variable{Name: "OWN_X", Type: VarText, Required: true, Pick: "webhook"}, false},
 		{"kind case differs", Variable{Name: "OWN_X", Type: VarText, Required: true, Pick: "Domain"}, false},
+		{"list pick", Variable{Name: "ALLOW_DENY_LIST", Type: VarText, Required: true, Pick: PickAllowDeny}, true},
+		{"optional list pick", Variable{Name: "ALLOW_DENY_LIST", Type: VarText, Pick: PickAllowDeny}, false},
+		{"list kind case differs", Variable{Name: "ALLOW_DENY_LIST", Type: VarText, Required: true, Pick: "allowdeny"}, false},
+		{"split list kind", Variable{Name: "DENY_LIST", Type: VarText, Required: true, Pick: "denyList"}, false},
 	}
 	for _, c := range cases {
 		m := baseManifest()

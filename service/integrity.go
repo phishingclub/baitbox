@@ -96,7 +96,8 @@ func allowedTopName(name string) bool {
 // ratio, allowlist and path traversal guards, parses and validates the
 // manifest, and verifies that every declared entry is present with a matching
 // sha256. When the manifest names a preview image, that file must be a raster
-// image that passes the same checks as a gallery upload. It returns the
+// image that passes the same checks as a gallery upload. The assets block of
+// every data.yaml must describe shipped files with settings Phishing Club takes. It returns the
 // validated manifest and the sum of the unpacked file sizes, manifest included,
 // which is what Phishing Club counts against its bundle install cap. The
 // archive bytes are not held in memory beyond one file at a time.
@@ -122,6 +123,9 @@ func InspectArchiveSize(archivePath string, lim ArchiveLimits) (*manifest.Manife
 
 	var manifestBytes []byte
 	fileShas := map[string]string{}
+	// dataDocs holds each content folder data.yaml so its assets block can be
+	// checked once the manifest is trusted. Each is bounded by the file cap.
+	dataDocs := map[string][]byte{}
 	// seen holds every name by its case folded form, so two names that differ
 	// only by case clash too. Its size is bounded by the entry caps.
 	seen := map[string]bool{}
@@ -192,7 +196,7 @@ func InspectArchiveSize(archivePath string, lim ArchiveLimits) (*manifest.Manife
 		limited := io.LimitReader(tr, limit+1)
 		var w io.Writer = h
 		var buf *strings.Builder
-		if name == manifest.FileName {
+		if name == manifest.FileName || isDataYAML(name) {
 			buf = &strings.Builder{}
 			w = io.MultiWriter(h, buf)
 		}
@@ -207,10 +211,13 @@ func InspectArchiveSize(archivePath string, lim ArchiveLimits) (*manifest.Manife
 		if total > lim.MaxUnpacked {
 			return nil, 0, fmt.Errorf("archive exceeds total size limit")
 		}
-		if buf != nil {
+		if name == manifest.FileName {
 			manifestBytes = []byte(buf.String())
 		} else {
 			fileShas[name] = hex.EncodeToString(h.Sum(nil))
+			if buf != nil {
+				dataDocs[name] = []byte(buf.String())
+			}
 		}
 	}
 
@@ -249,6 +256,18 @@ func InspectArchiveSize(archivePath string, lim ArchiveLimits) (*manifest.Manife
 		if err := checkArchivePreview(archivePath, m.Preview); err != nil {
 			return nil, 0, err
 		}
+	}
+	// the per asset settings (content type, headers, allow deny lists) are checked
+	// here so every publish path, an upload, an authored package or an import,
+	// refuses the same packages Phishing Club would refuse on install.
+	assetFiles := map[string]bool{}
+	for name := range fileShas {
+		if strings.HasPrefix(name, "assets/") {
+			assetFiles[strings.TrimPrefix(name, "assets/")] = true
+		}
+	}
+	if err := validateAssetBlocks(m.Type, dataDocs, assetFiles); err != nil {
+		return nil, 0, err
 	}
 	return m, total, nil
 }

@@ -72,10 +72,15 @@ var validVarTypes = map[string]bool{
 	VarDomain: true, VarURL: true, VarSecret: true, VarText: true, VarEnum: true,
 }
 
+// PickAllowDeny is the pick kind for one of the installer's own allow or deny
+// lists, which an asset's allowDeny list then names as its only list.
+const PickAllowDeny = "allowDeny"
+
 // validPickKinds are the entity kinds Phishing Club can list for a pick variable.
 var validPickKinds = map[string]bool{
 	"smtpConfiguration": true, "domain": true, "email": true, "page": true,
 	"proxy": true, "apiSender": true, "oauthProvider": true,
+	PickAllowDeny: true,
 }
 
 // Dependency is a required package and the semver range that satisfies it.
@@ -97,9 +102,9 @@ type Variable struct {
 	Options []string `json:"options,omitempty"`
 	// Pick, when set, names an entity kind the installer must choose from their own
 	// existing entities at install (smtpConfiguration, domain, email, page, proxy,
-	// apiSender, oauthProvider). The chosen entity name becomes the value, which a
-	// campaign template slot or an api sender reference then resolves by name. Empty
-	// for an ordinary value variable.
+	// apiSender, oauthProvider, allowDeny). The chosen entity name becomes the value,
+	// which a campaign template slot, an api sender reference or an asset allowDeny
+	// entry then resolves by name. Empty for an ordinary value variable.
 	Pick string `json:"pick,omitempty"`
 }
 
@@ -129,8 +134,8 @@ type Manifest struct {
 	Dependencies []Dependency `json:"dependencies,omitempty"`
 	// ShareVariables applies to a bundle: when true (the default when absent) a
 	// variable of the same name across the referenced packages is filled once and
-	// shared; when false each referenced package collects its own value. Only a
-	// bundle reads it.
+	// shared; when false each referenced package collects its own value. Any
+	// other package may not set it.
 	ShareVariables *bool      `json:"shareVariables,omitempty"`
 	Variables      []Variable `json:"variables,omitempty"`
 	ContentHash    string     `json:"contentHash"`
@@ -260,6 +265,11 @@ func (m *Manifest) Validate() error {
 	if m.Type == TypeBundle && len(m.Dependencies) == 0 {
 		return fmt.Errorf("a bundle must reference at least one package")
 	}
+	// only a bundle installs packages that could share variable names with it,
+	// so the setting means nothing on any other package and is refused there.
+	if m.Type != TypeBundle && m.ShareVariables != nil {
+		return fmt.Errorf("shareVariables applies only to a bundle")
+	}
 	seenVar := map[string]bool{}
 	for _, v := range m.Variables {
 		if !nameRe.MatchString(v.Name) {
@@ -292,6 +302,11 @@ func (m *Manifest) Validate() error {
 			}
 			if v.Default != nil {
 				return fmt.Errorf("pick variable %q cannot have a default", v.Name)
+			}
+			// a filtered asset must never install without its list, so a list
+			// pick is always filled at install.
+			if v.Pick == PickAllowDeny && !v.Required {
+				return fmt.Errorf("list pick variable %q must be required", v.Name)
 			}
 		}
 		if v.Type == VarEnum {

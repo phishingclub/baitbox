@@ -35,7 +35,10 @@ export function mimeFor(name) {
 // a leading indicator, surrounding spaces or a newline, so a subject or title like
 // "Action Required: Verify" must be double quoted and escaped, or the generated
 // data.yaml is invalid and the package fails to install. values that are safe plain
-// scalars are left as is so simple content stays readable.
+// scalars are left as is so simple content stays readable. a C1 control, the line
+// breaks U+0085, U+2028 and U+2029, and the byte order mark are escaped too, since
+// the Go YAML parser Phishing Club uses reads the line breaks as a new line and
+// refuses the others as plain or quoted text.
 export function yamlStr(v) {
 	const s = String(v ?? '');
 	const safe =
@@ -44,9 +47,45 @@ export function yamlStr(v) {
 		!/:(\s|$)/.test(s) &&
 		!/\s#/.test(s) &&
 		!/^[-?:,[\]{}#&*!|>'"%@`]/.test(s) &&
-		!/\n/.test(s);
+		!/\n/.test(s) &&
+		// a plain null, bool or number would load as that type, and a null loads as
+		// an empty string, so quote anything that reads as one.
+		!/^(?:~|null|true|false|yes|no|on|off|y|n)$/i.test(s) &&
+		!/^[-+]?\.?\d/.test(s) &&
+		// a control character cannot appear in a plain scalar.
+		// eslint-disable-next-line no-control-regex
+		!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u2028\u2029\ufeff]/.test(s);
 	if (safe) return s;
-	return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r/g, '').replace(/\n/g, '\\n').replace(/\t/g, '\\t') + '"';
+	return (
+		'"' +
+		s
+			.replace(/\\/g, '\\\\')
+			.replace(/"/g, '\\"')
+			.replace(/\r/g, '')
+			.replace(/\n/g, '\\n')
+			.replace(/\t/g, '\\t')
+			.replace(/\u0085/g, '\\N')
+			.replace(/\u2028/g, '\\L')
+			.replace(/\u2029/g, '\\P')
+			// eslint-disable-next-line no-control-regex
+			.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, (c) => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+			.replace(/[\u0080-\u009f\ufeff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')) +
+		'"'
+	);
+}
+
+// undo yamlStr for one scalar as written: a double quoted scalar has its quotes
+// and escapes removed, anything else is returned as is.
+export function unquoteYamlStr(s) {
+	if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
+		const named = { n: '\n', t: '\t', N: '\u0085', L: '\u2028', P: '\u2029', 0: '\u0000' };
+		return s
+			.slice(1, -1)
+			.replace(/\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)/g, (_, c) =>
+				c.length > 1 ? String.fromCharCode(parseInt(c.slice(1), 16)) : c in named ? named[c] : c
+			);
+	}
+	return s;
 }
 
 // encode text as base64, handling utf-8 bytes, for shipping a file body in the

@@ -26,7 +26,7 @@ func TestPublishRechecksDepsInsideTransaction(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	err := publishPageWithDeps(svc, "open", "kit", "1.0.0", []manifest.Dependency{{ID: "lib/lure", Range: "^1.0.0"}})
+	_, err := publishBundle(svc, "open", "kit", "1.0.0", []manifest.Dependency{{ID: "lib/lure", Range: "^1.0.0"}})
 	if err == nil || !strings.Contains(err.Error(), "private package") {
 		t.Fatalf("want a dependency visibility error, got %v", err)
 	}
@@ -43,7 +43,7 @@ func TestImportRechecksDepsInsideTransaction(t *testing.T) {
 	lib := mustEnsureNS(t, dst, "lib", database.VisibilityPublic)
 	publishPage(t, dst, "lib", "lure", "1.0.0")
 	deps := []manifest.Dependency{{ID: "lib/lure", Range: "^1.0.0"}}
-	tarball, sha := singlePageBundle(t, "open", database.VisibilityPublic, "kit", manifest.TypePage, manifest.TypePage, "1.0.0", deps)
+	tarball, sha := singlePageBundle(t, "open", database.VisibilityPublic, "kit", manifest.TypeBundle, manifest.TypeBundle, "1.0.0", deps)
 
 	dst.beforeWriteCommit = func() {
 		if err := dst.repo.UpdateNamespace(lib.ID, "", database.VisibilityPrivate); err != nil {
