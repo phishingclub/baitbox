@@ -83,21 +83,25 @@ jobs:
 
       # no Go build cache: release builds are infrequent and produce a signed,
       # published binary, so a clean compile keeps cached objects out of the
-      # signing path. The digest below is the golang:1.27.3-alpine image index;
-      # the platform flag selects the matching per arch image from it.
+      # signing path. Each arch pins its own golang:1.27.3-alpine image digest,
+      # the same as test-build.yml.
       - name: Build binaries
         run: |
           mkdir -p build/amd64 build/arm64
-          for arch in amd64 arm64; do
-            sudo docker run --rm \
-              --platform linux/$arch \
-              -v "$(pwd)":/app \
-              -w /app \
-              golang@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb `# golang:1.27.3-alpine` \
-              sh -c "apk add --no-cache gcc=15.2.0-r5 musl-dev=1.2.6-r3 && go build -trimpath -mod vendor \
-                -ldflags='-X main.version=${{ steps.version.outputs.VERSION }} -linkmode=external -extldflags=-static' \
-                -o /app/build/$arch/baitbox ."
-          done
+          LDFLAGS="-X main.version=${{ steps.version.outputs.VERSION }} -linkmode=external -extldflags=-static"
+
+          sudo docker run --rm \
+            -v "$(pwd)":/app \
+            -w /app \
+            golang@sha256:bff16a94c0b4b6d9642581e2a3aa81beb3edb940b2f5a3aac1d22c6a68cb7747 `# golang:1.27.3-alpine linux/amd64` \
+            sh -c "apk add --no-cache gcc=15.2.0-r5 musl-dev=1.2.6-r3 && go build -trimpath -mod vendor -ldflags='$LDFLAGS' -o /app/build/amd64/baitbox ."
+
+          sudo docker run --rm \
+            --platform linux/arm64 \
+            -v "$(pwd)":/app \
+            -w /app \
+            golang@sha256:ee0dcdc452cb73890363fbef65fc333aeb0da7c24ba52f2c6428a37b0e7f4f1c `# golang:1.27.3-alpine linux/arm64` \
+            sh -c "apk add --no-cache gcc=15.2.0-r5 musl-dev=1.2.6-r3 && go build -trimpath -mod vendor -ldflags='$LDFLAGS' -o /app/build/arm64/baitbox ."
 
       - name: Fix build directory permissions
         run: |
