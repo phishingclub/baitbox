@@ -8,6 +8,7 @@
 	import { auth } from '$lib/stores/auth.svelte.js';
 	import { toast } from '$lib/stores/toast.svelte.js';
 	import BrandMark from '$lib/components/BrandMark.svelte';
+	import BetaTag from '$lib/components/BetaTag.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Card from '$lib/components/Card.svelte';
 	import Field from '$lib/components/Field.svelte';
@@ -81,6 +82,7 @@
 					<BrandMark class="h-5 w-5" />
 				</span>
 				<span class="font-phudu text-xl font-bold tracking-tight">Bait Box</span>
+				<BetaTag />
 			</div>
 			<button type="button" onclick={logout} class="text-sm font-medium text-gray-700 underline-offset-4 hover:text-gray-900 hover:underline dark:text-gray-200 dark:hover:text-white">Log out</button>
 		</div>

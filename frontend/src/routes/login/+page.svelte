@@ -4,6 +4,7 @@
 	import { auth } from '$lib/stores/auth.svelte.js';
 	import { toast } from '$lib/stores/toast.svelte.js';
 	import BrandMark from '$lib/components/BrandMark.svelte';
+	import BetaTag from '$lib/components/BetaTag.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import Card from '$lib/components/Card.svelte';
 	import { getCredential, supported } from '$lib/webauthn.js';
@@ -92,6 +93,7 @@
 					<BrandMark class="h-5 w-5" />
 				</span>
 				<h1 class="font-phudu text-xl font-bold tracking-tight">Bait Box</h1>
+				<BetaTag />
 			</div>
 			{#if !mfaStep}
 				<label class="block text-sm mb-3">

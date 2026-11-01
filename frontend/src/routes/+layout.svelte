@@ -10,6 +10,7 @@
 	import Toasts from '$lib/components/Toasts.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import BrandMark from '$lib/components/BrandMark.svelte';
+	import BetaTag from '$lib/components/BetaTag.svelte';
 	import { updateState, loadUpdateStatus, setUpdateStatus } from '$lib/stores/update.svelte.js';
 
 	let { children } = $props();
@@ -153,6 +154,7 @@
 				<div class="flex items-center gap-2 px-5 py-5 text-white">
 					<BrandMark class="h-6 w-6 shrink-0" />
 					<div class="font-phudu text-xl font-bold tracking-tight">Bait Box</div>
+					<BetaTag onDark />
 				</div>
 				<nav class="flex-1 overflow-y-auto px-3">
 					{#each navGroups as group}
