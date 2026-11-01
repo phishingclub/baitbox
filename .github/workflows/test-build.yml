@@ -7,10 +7,8 @@ name: Test Build
 # whose public half is embedded, so no installed self update accepts a test
 # build.
 #
-# The admin SPA is built in its own job; npm runs there with install scripts
-# off and sees only the frontend directory, and the built SPA is handed to the
-# Go build job as an artifact, so npm code never runs where the Go sources and
-# the signing key are.
+# The admin SPA is built first in a throwaway container that sees only the
+# frontend directory, with npm install scripts off.
 #
 # Trigger: push to the test-build branch, or run it by hand. A push builds
 # amd64 only; a manual run can tick build_arm to also build arm64.
@@ -32,7 +30,7 @@ permissions:
   contents: read
 
 jobs:
-  frontend:
+  test-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -40,13 +38,12 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-          sparse-checkout: frontend
 
-      # the frontend directory is mounted read only and copied inside the
-      # container, so npm writes nothing back to the runner except build/.
-      # npm ci installs exactly what package-lock.json pins and fails if the
-      # lockfile and package.json disagree; install scripts are skipped (esbuild
-      # finds its binary through its optional platform package without one).
+      # npm runs in a throwaway container that sees only a read only copy of
+      # frontend/ and writes only frontend/build. It runs before any secret is
+      # written. npm ci installs exactly what package-lock.json pins and install
+      # scripts are skipped (esbuild finds its binary through its optional
+      # platform package without one).
       - name: Build admin SPA
         run: |
           mkdir -p spa-out
@@ -57,30 +54,8 @@ jobs:
             sh -c "cp -r /src /work && rm -rf /work/node_modules /work/build /work/.svelte-kit && cd /work \
               && npm ci --ignore-scripts --no-audit --no-fund && npm run build && cp -r build/. /out/ \
               && chown -R $(id -u):$(id -g) /out"
-
-      - name: Upload admin SPA
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: admin-spa
-          path: spa-out/
-          if-no-files-found: error
-          retention-days: 1
-
-  test-build:
-    needs: frontend
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Download admin SPA
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: admin-spa
-          path: frontend/build
+          rm -rf frontend/build
+          mv spa-out frontend/build
 
       # arm64 is built under emulation, so the arm64 golang image can run on the
       # amd64 runner. only needed when arm64 is built.
