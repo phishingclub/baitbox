@@ -53,6 +53,11 @@
 		return `${day} day${day === 1 ? '' : 's'} ago`;
 	}
 
+	// the release tag is "v1.2.3" while the running binary reports "1.2.3"
+	function bare(v) {
+		return String(v || '').trim().replace(/^v/i, '');
+	}
+
 	function localTime(iso) {
 		if (!iso) return '';
 		const d = new Date(iso);
@@ -139,7 +144,9 @@
 				if (r.ok) {
 					const data = await r.json();
 					if (destroyed) return;
-					const back = targetVersion ? data.currentVersion === targetVersion : data.currentVersion !== oldVersion;
+					const back = targetVersion
+						? bare(data.currentVersion) === bare(targetVersion)
+						: bare(data.currentVersion) !== bare(oldVersion);
 					if (back) {
 						toast(`Updated to version ${data.currentVersion}`, 'success');
 						setTimeout(() => {
