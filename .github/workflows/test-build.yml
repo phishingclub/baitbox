@@ -3,9 +3,8 @@ name: Test Build
 # Builds a test baitbox binary the same way as release.yml (static musl cgo
 # build in the pinned golang alpine image, no dev tag so it targets Let's
 # Encrypt) and keeps it as a workflow artifact for review. Nothing is published.
-# Test builds are never signed. Only release.yml signs, with the release key
-# whose public half is embedded, so no installed self update accepts a test
-# build.
+# The binaries are signed with the release key, the same as release.yml, and
+# the .sig is packaged beside the binary. The build fails if SIGNKEY_1 is missing.
 #
 # The admin SPA is built first in a throwaway container that sees only the
 # frontend directory, with npm install scripts off.
@@ -108,12 +107,32 @@ jobs:
           sudo chown -R $USER:$USER build/
           ls -la build/amd64 build/arm64
 
-      - name: Package binaries
+      - name: Sign binaries with Ed25519
+        env:
+          SIGNKEY_1: ${{ secrets.SIGNKEY_1 }}
+        run: |
+          if [ -z "$SIGNKEY_1" ]; then
+            echo "SIGNKEY_1 secret is missing" >&2
+            exit 1
+          fi
+          mkdir -p /tmp/keys
+          chmod 700 /tmp/keys
+          printf '%s\n' "$SIGNKEY_1" > /tmp/keys/private1.pem
+          chmod 600 /tmp/keys/private1.pem
+          for arch in amd64 arm64; do
+            [ -f build/$arch/baitbox ] || continue
+            openssl pkeyutl -sign -inkey /tmp/keys/private1.pem -rawin \
+              -in build/$arch/baitbox -out build/$arch/baitbox.sig
+          done
+          rm -rf /tmp/keys
+
+      - name: Package binaries with their signatures
         run: |
           mkdir -p packages
           for arch in amd64 arm64; do
             [ -f build/$arch/baitbox ] || continue
-            tar -czf packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_$arch.tar.gz -C build/$arch baitbox
+            tar -czf packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_$arch.tar.gz \
+              -C build/$arch baitbox baitbox.sig
           done
 
       - name: Verify build artifacts
@@ -123,6 +142,7 @@ jobs:
             echo "=== $arch ==="
             file build/$arch/baitbox
             du -h build/$arch/baitbox
+            du -h build/$arch/baitbox.sig
             tar -tzf packages/baitbox_${{ steps.version.outputs.VERSION }}_linux_$arch.tar.gz
           done
 
@@ -134,6 +154,8 @@ jobs:
           if-no-files-found: ignore
           path: |
             build/amd64/baitbox
+            build/amd64/baitbox.sig
             build/arm64/baitbox
+            build/arm64/baitbox.sig
             packages/*.tar.gz
           retention-days: 2
